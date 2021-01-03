@@ -4,8 +4,12 @@
 # Copyright (c) 2017, Nicolas P. Rougier
 # Distributed under the 2-Clause BSD License.
 # -----------------------------------------------------------------------------
+import datetime
+import enum
 import sys
 import ctypes
+from typing import Callable, Optional
+
 import numpy as np
 import OpenGL.GL as gl
 import OpenGL.GLUT as glut
@@ -15,11 +19,18 @@ class KeyByteCodes:
     ESCAPE = b'\x1b'
 
 
+class Axis(enum.Enum):
+    X = enum.auto()
+    Y = enum.auto()
+    Z = enum.auto()
+
+
 class QuadRenderer:
-    def __init__(self, window_name='Hello world!', window_size=(512, 512)):
+    def __init__(self, window_name='Hello world!', window_size=(512, 512), fps=60):
         """
         :param window_name: The name of the window to use for rendering.
         :param window_size: The width and height of the window to use for rendering.
+        :param fps: The target frames per second to draw at.
         """
         vertex_code = """
             uniform mat4   mvp;           // The model, view and projection matrices as one matrix.
@@ -50,11 +61,13 @@ class QuadRenderer:
         glut.glutCreateWindow(window_name)
         glut.glutReshapeWindow(*window_size)
         glut.glutReshapeFunc(self.reshape)
+        glut.glutIdleFunc(self.idle)
         glut.glutDisplayFunc(self.display)
         glut.glutKeyboardFunc(self.keyboard)
 
         # Build data
         # --------------------------------------
+        # Define a basic quad that covers the screen.
         data = np.zeros(4, [("position", np.float32, 3),
                             ("color", np.float32, 4)])
         data['position'] = (-1, +1, 0), (+1, +1, 0), (-1, -1, 0), (+1, -1, 0)
@@ -129,14 +142,74 @@ class QuadRenderer:
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, buffer)
         gl.glVertexAttribPointer(loc, 4, gl.GL_FLOAT, False, stride, offset)
 
-        self.view = np.eye(4, dtype=np.float32)
-        self.model = np.eye(4, dtype=np.float32)
-        self.projection = np.eye(4, dtype=np.float32)
+        self.view: np.ndarray = np.eye(4, dtype=np.float32)
+        self.model: np.ndarray = np.eye(4, dtype=np.float32)
+        self.projection: np.ndarray = np.eye(4, dtype=np.float32)
 
-    def mainloop(self):
-        # Enter the mainloop
-        # --------------------------------------
+        self.last_frame_time: datetime.datetime = datetime.datetime.now()
+        self.fps: float = fps
+        self.update: Optional[Callable[[float], None]] = None
+
+    def log(self, message):
+        """
+        Print a message to stdout with a timestamp.
+        :param message: The message to print.
+        """
+        print(f"[{datetime.datetime.now()}] {message}")
+
+    def run(self):
+        """
+        Run the application.
+
+        Blocks until execution is finished.
+        """
         glut.glutMainLoop()
+
+    @staticmethod
+    def get_rotation_matrix(angle, axis=Axis.X, dtype=np.float32, degrees=False):
+        """
+        Get the 4x4 rotation matrix for the given angle and rotation axis.
+
+        :param angle: The angle to rotate by.
+        :param axis: The axis to rotate about.
+        :param dtype: The data type of the rotation matrix.
+        :param degrees: Whether the angle is in degrees (=True) or radians (=False).
+        :return: The rotation matrix.
+        """
+        rotation_matrix = np.eye(4, dtype=dtype)
+
+        if degrees:
+            angle = np.deg2rad(angle)
+
+        if axis == Axis.X:
+            rotation_matrix[1, 1] = np.cos(angle)
+            rotation_matrix[1, 2] = -np.sin(angle)
+            rotation_matrix[2, 1] = np.sin(angle)
+            rotation_matrix[2, 2] = np.cos(angle)
+        elif axis == Axis.Y:
+            rotation_matrix[0, 0] = np.cos(angle)
+            rotation_matrix[0, 2] = np.sin(angle)
+            rotation_matrix[2, 0] = -np.sin(angle)
+            rotation_matrix[2, 2] = np.cos(angle)
+        elif axis == Axis.Z:
+            rotation_matrix[0, 0] = np.cos(angle)
+            rotation_matrix[0, 1] = -np.sin(angle)
+            rotation_matrix[1, 0] = np.sin(angle)
+            rotation_matrix[1, 1] = np.cos(angle)
+        else:
+            raise RuntimeError(f"Invalid value for argument 'axis'; Expected type {Axis}, got {type(axis)}.")
+
+        return rotation_matrix
+
+    def idle(self):
+        now = datetime.datetime.now()
+        delta = (now - self.last_frame_time).total_seconds()
+
+        if delta > 1.0 / self.fps:
+            if self.update:
+                self.update(delta)
+
+            self.last_frame_time = now
 
     def display(self):
         gl.glClear(gl.GL_COLOR_BUFFER_BIT)
@@ -148,6 +221,7 @@ class QuadRenderer:
 
         gl.glDrawArrays(gl.GL_TRIANGLE_STRIP, 0, 4)
         glut.glutSwapBuffers()
+        glut.glutPostRedisplay()
 
     def reshape(self, width, height):
         gl.glViewport(0, 0, width, height)
@@ -158,5 +232,13 @@ class QuadRenderer:
 
 
 if __name__ == '__main__':
-    renderer = QuadRenderer()
-    renderer.mainloop()
+    fps = 144
+
+    renderer = QuadRenderer(fps=fps)
+
+    def update_func(delta):
+        rot = QuadRenderer.get_rotation_matrix(6 / fps / delta, axis=Axis.Z, degrees=True)
+        renderer.view = rot @ renderer.view
+
+    renderer.update = update_func
+    renderer.run()
