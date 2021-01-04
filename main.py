@@ -150,13 +150,6 @@ class QuadRenderer:
         self.fps: float = fps
         self.update: Optional[Callable[[float], None]] = None
 
-    def log(self, message):
-        """
-        Print a message to stdout with a timestamp.
-        :param message: The message to print.
-        """
-        print(f"[{datetime.datetime.now()}] {message}")
-
     def run(self):
         """
         Run the application.
@@ -164,6 +157,43 @@ class QuadRenderer:
         Blocks until execution is finished.
         """
         glut.glutMainLoop()
+
+    def idle(self):
+        now = datetime.datetime.now()
+        delta = (now - self.last_frame_time).total_seconds()
+
+        if delta > 1.0 / self.fps:
+            if self.update:
+                self.update(delta)
+
+            self.last_frame_time = now
+
+    def display(self):
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+
+        mvp = self.projection @ self.view @ self.model
+
+        loc = gl.glGetUniformLocation(self.program, "mvp")
+        gl.glUniformMatrix4fv(loc, 1, gl.GL_TRUE, mvp)
+
+        gl.glDrawArrays(gl.GL_TRIANGLE_STRIP, 0, 4)
+        glut.glutSwapBuffers()
+        glut.glutPostRedisplay()
+
+    def reshape(self, width, height):
+        gl.glViewport(0, 0, width, height)
+
+    def keyboard(self, key, x, y):
+        if key == KeyByteCodes.ESCAPE:
+            sys.exit()
+
+    @staticmethod
+    def log(message):
+        """
+        Print a message to stdout with a timestamp.
+        :param message: The message to print.
+        """
+        print(f"[{datetime.datetime.now()}] {message}")
 
     @staticmethod
     def get_rotation_matrix(angle, axis=Axis.X, dtype=np.float32, degrees=False):
@@ -201,44 +231,84 @@ class QuadRenderer:
 
         return rotation_matrix
 
-    def idle(self):
-        now = datetime.datetime.now()
-        delta = (now - self.last_frame_time).total_seconds()
+    @staticmethod
+    def get_translation_matrix(dx: float = 0, dy: float = 0, dz: float = 0, dtype=np.float32):
+        """
+        Get the 4x4 translation matrix for the given displacement values across the x, y and z axes.
 
-        if delta > 1.0 / self.fps:
-            if self.update:
-                self.update(delta)
+        :param dx: The translation on the x axis.
+        :param dy: The translation on the y axis.
+        :param dz: The translation on the z axis.
+        :param dtype: The data type of the translation matrix.
+        :return: The 4x4 translation matrix.
+        """
+        translation_matrix = np.eye(4, dtype=dtype)
 
-            self.last_frame_time = now
+        translation_matrix[0, 3] = dx
+        translation_matrix[1, 3] = dy
+        translation_matrix[2, 3] = dz
 
-    def display(self):
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        return translation_matrix
 
-        mvp = self.projection @ self.view @ self.model
+    @staticmethod
+    def get_scale_matrix(sx: float = 1, sy: Optional[float] = None, sz: Optional[float] = None, dtype=np.float32):
+        """
+        Get the 4x4 scale matrix for the given scales for the x, y and z axes.
 
-        loc = gl.glGetUniformLocation(self.program, "mvp")
-        gl.glUniformMatrix4fv(loc, 1, gl.GL_FALSE, mvp)
+        :param sx: The scale of the x axis. If either `sy` or `sz` are set to `None`, then this value will be used for all axes.
+        :param sy: The scale of the y axis.
+        :param sz: The scale of the z axis.
+        :param dtype: The data type of the scale matrix.
+        :return: The 4x4 scale matrix.
+        """
+        scale_matrix = np.eye(4, dtype=dtype)
 
-        gl.glDrawArrays(gl.GL_TRIANGLE_STRIP, 0, 4)
-        glut.glutSwapBuffers()
-        glut.glutPostRedisplay()
+        if sy is None or sz is None:
+            sy = sx
+            sz = sx
 
-    def reshape(self, width, height):
-        gl.glViewport(0, 0, width, height)
+        scale_matrix[0, 0] = sx
+        scale_matrix[1, 1] = sy
+        scale_matrix[2, 2] = sz
 
-    def keyboard(self, key, x, y):
-        if key == KeyByteCodes.ESCAPE:
-            sys.exit()
+        return scale_matrix
 
 
 if __name__ == '__main__':
     fps = 144
+    window_width = 512
+    window_height = 512
 
-    renderer = QuadRenderer(fps=fps)
+    fov_y = 60
+    aspect_ratio = window_width / window_height
+    near = 0.0
+    far = 1000.0
+
+    renderer = QuadRenderer(fps=fps, window_size=(window_width, window_height))
+
+    renderer.model = QuadRenderer.get_scale_matrix(1.5) @ renderer.model
+    QuadRenderer.log(f"Model: \n{renderer.model}")
+
+    renderer.view = QuadRenderer.get_rotation_matrix(angle=30, axis=Axis.X, degrees=True) @ renderer.view
+    QuadRenderer.log(f"View: \n{renderer.view}")
+    renderer.view = QuadRenderer.get_translation_matrix(dz=-100) @ renderer.view
+    QuadRenderer.log(f"View: \n{renderer.view}")
+
+    renderer.projection = np.array(
+        [[fov_y / aspect_ratio, 0, 0, 0],
+         [0, fov_y, 0, 0],
+         [0, 0, (far + near) / (near - far), (2 * near * far) / (near - far)],
+         [0, 0, -1, 0]],
+        dtype=np.float32
+    )
+    QuadRenderer.log(f"Projection: \n{renderer.projection}")
+
 
     def update_func(delta):
-        rot = QuadRenderer.get_rotation_matrix(6 / fps / delta, axis=Axis.Z, degrees=True)
-        renderer.view = rot @ renderer.view
+        t = QuadRenderer.get_rotation_matrix(6 * delta, axis=Axis.Y, degrees=True)
+
+        renderer.model = t @ renderer.model
+        pass
 
     renderer.update = update_func
     renderer.run()
