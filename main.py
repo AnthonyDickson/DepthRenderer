@@ -14,6 +14,8 @@ import numpy as np
 import OpenGL.GL as gl
 import OpenGL.GLUT as glut
 
+from PIL import Image
+
 
 class KeyByteCodes:
     ESCAPE = b'\x1b'
@@ -26,31 +28,33 @@ class Axis(enum.Enum):
 
 
 class QuadRenderer:
-    def __init__(self, window_name='Hello world!', window_size=(512, 512), fps=60):
+    def __init__(self, texture_path, window_name='Hello world!', window_size=(512, 512), fps=60):
         """
+        :param texture_path: The path to the texture file to render on the quad.
         :param window_name: The name of the window to use for rendering.
         :param window_size: The width and height of the window to use for rendering.
         :param fps: The target frames per second to draw at.
         """
         vertex_code = """
             uniform mat4   mvp;           // The model, view and projection matrices as one matrix.
-            attribute vec4 color;         // Vertex color
             attribute vec3 position;      // Vertex position
-            varying vec4   v_color;       // Interpolated fragment color (out)
+            attribute vec2 texcoord;   // Vertex texture coordinates
+            varying vec2   v_texcoord;       // Interpolated fragment texture coordinates (out)
     
             void main()
             {
               gl_Position = mvp * vec4(position, 1.0);
-              v_color = color;
+              v_texcoord = texcoord;
             }
         """
 
         fragment_code = """
-            varying vec4 v_color;
+            uniform sampler2D texture; // Texture
+            varying vec2 v_texcoord;   // Interpolated fragment texture coordinates (in)
     
             void main()
             {
-              gl_FragColor = v_color;
+              gl_FragColor = texture2D(texture, v_texcoord);
             } 
         """
 
@@ -69,9 +73,9 @@ class QuadRenderer:
         # --------------------------------------
         # Define a basic quad that covers the screen.
         data = np.zeros(4, [("position", np.float32, 3),
-                            ("color", np.float32, 4)])
+                            ("texcoord", np.float32, 2)])
         data['position'] = (-1, +1, 0), (+1, +1, 0), (-1, -1, 0), (+1, -1, 0)
-        data['color'] = (0, 1, 0, 1), (1, 1, 0, 1), (1, 0, 0, 1), (0, 0, 1, 1)
+        data['texcoord'] = (0, 1), (1, 1), (0, 0), (1, 0)
 
         # Build & activate program
         # --------------------------------------
@@ -137,10 +141,12 @@ class QuadRenderer:
         gl.glVertexAttribPointer(loc, 3, gl.GL_FLOAT, False, stride, offset)
 
         offset = ctypes.c_void_p(data.dtype["position"].itemsize)
-        loc = gl.glGetAttribLocation(self.program, "color")
+        loc = gl.glGetAttribLocation(self.program, "texcoord")
         gl.glEnableVertexAttribArray(loc)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, buffer)
-        gl.glVertexAttribPointer(loc, 4, gl.GL_FLOAT, False, stride, offset)
+        gl.glVertexAttribPointer(loc, 2, gl.GL_FLOAT, False, stride, offset)
+
+        self.texture_id = self.load_texture(texture_path)
 
         self.view: np.ndarray = np.eye(4, dtype=np.float32)
         self.model: np.ndarray = np.eye(4, dtype=np.float32)
@@ -149,6 +155,26 @@ class QuadRenderer:
         self.last_frame_time: datetime.datetime = datetime.datetime.now()
         self.fps: float = fps
         self.update: Optional[Callable[[float], None]] = None
+
+    @staticmethod
+    def load_texture(fp):
+        img = Image.open(fp)
+        img_data = np.asarray(img)
+
+        texture = gl.glGenTextures(1)
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, texture)
+
+        # Texture parameters are part of the texture object, so you need to
+        # specify them only once for a given texture object.
+        gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_S, gl.GL_CLAMP)
+        gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP)
+        gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
+        gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, img.size[0], img.size[1], 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE,
+                        img_data)
+
+        return texture
 
     def run(self):
         """
@@ -275,6 +301,8 @@ class QuadRenderer:
 
 
 if __name__ == '__main__':
+    texture_path = "brick_wall.jpg"
+
     fps = 144
     window_width = 512
     window_height = 512
@@ -284,7 +312,7 @@ if __name__ == '__main__':
     near = 0.0
     far = 1000.0
 
-    renderer = QuadRenderer(fps=fps, window_size=(window_width, window_height))
+    renderer = QuadRenderer(texture_path, fps=fps, window_size=(window_width, window_height))
 
     renderer.model = QuadRenderer.get_scale_matrix(1.5) @ renderer.model
     QuadRenderer.log(f"Model: \n{renderer.model}")
@@ -309,6 +337,7 @@ if __name__ == '__main__':
 
         renderer.model = t @ renderer.model
         pass
+
 
     renderer.update = update_func
     renderer.run()
