@@ -28,33 +28,40 @@ class Axis(enum.Enum):
 
 
 class QuadRenderer:
-    def __init__(self, texture_path, window_name='Hello world!', window_size=(512, 512), fps=60):
+    def __init__(self, texture_path, depth_path, window_name='Hello world!', window_size=(512, 512), fps=60, mesh_density=0):
         """
         :param texture_path: The path to the texture file to render on the quad.
         :param window_name: The name of the window to use for rendering.
         :param window_size: The width and height of the window to use for rendering.
         :param fps: The target frames per second to draw at.
         """
+        # TODO: Load shaders from disk.
+        # TODO: Get vertex displacement in shaders working properly.
         vertex_code = """
             uniform mat4   mvp;           // The model, view and projection matrices as one matrix.
             attribute vec3 position;      // Vertex position
             attribute vec2 texcoord;   // Vertex texture coordinates
             varying vec2   v_texcoord;       // Interpolated fragment texture coordinates (out)
+            
+            uniform sampler2D colourSampler; // Texture
+            uniform sampler2D depthSampler; // Depth Texture
     
             void main()
             {
-              gl_Position = mvp * vec4(position, 1.0);
+              float displacement = tex2D(depthSampler, v_texcoord).r / 255.0;
+              gl_Position = mvp * vec4(position.x, position.y, position.z + displacement, 1.0);
               v_texcoord = texcoord;
             }
         """
 
         fragment_code = """
-            uniform sampler2D texture; // Texture
+            uniform sampler2D colourSampler; // Texture
+            uniform sampler2D depthSampler; // Depth Texture  
             varying vec2 v_texcoord;   // Interpolated fragment texture coordinates (in)
     
             void main()
             {
-              gl_FragColor = texture2D(texture, v_texcoord);
+              gl_FragColor = texture2D(colourSampler, v_texcoord);
             } 
         """
 
@@ -69,13 +76,14 @@ class QuadRenderer:
         glut.glutDisplayFunc(self.display)
         glut.glutKeyboardFunc(self.keyboard)
 
-        # Build data
-        # --------------------------------------
-        # Define a basic quad that covers the screen.
-        data = np.zeros(4, [("position", np.float32, 3),
-                            ("texcoord", np.float32, 2)])
-        data['position'] = (-1, +1, 0), (+1, +1, 0), (-1, -1, 0), (+1, -1, 0)
-        data['texcoord'] = (0, 1), (1, 1), (0, 0), (1, 0)
+        self.log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
+        self.log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
+        self.log(f"GL_VENDOR: {str(gl.glGetString(gl.GL_VENDOR), 'utf-8')}")
+        self.log(f"GLUT_API_VERSION: {glut.GLUT_API_VERSION}")
+
+        gl.glEnable(gl.GL_CULL_FACE)
+        # TODO: Get program working with depth test.
+        # gl.glEnable(gl.GL_DEPTH_TEST)
 
         # Build & activate program
         # --------------------------------------
@@ -119,34 +127,49 @@ class QuadRenderer:
         # Make program the default program
         gl.glUseProgram(self.program)
 
-        # Build buffer
-        # --------------------------------------
+        self.colour_sampler_uniform = gl.glGetUniformLocation(self.program, "colourSampler")
+        self.depth_sampler_uniform = gl.glGetUniformLocation(self.program, "depthSampler")
+        self.mvp_uniform = gl.glGetUniformLocation(self.program, "mvp")
 
-        # Request a buffer slot from GPU
-        buffer = gl.glGenBuffers(1)
+        self.position_attrib = gl.glGetAttribLocation(self.program, "position")
+        self.texcoord_attrib = gl.glGetAttribLocation(self.program, "texcoord")
 
-        # Make this buffer the default one
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, buffer)
+        self.vao = gl.glGenVertexArrays(1)
+        gl.glBindVertexArray(self.vao)
 
-        # Upload data
-        gl.glBufferData(gl.GL_ARRAY_BUFFER, data.nbytes, data, gl.GL_DYNAMIC_DRAW)
+        vertices, vertex_indices, texture_coords, num_triangles = \
+            QuadRenderer.generate_vertices_and_texture_coordinates(mesh_density)
+        self.num_vertices = len(vertices)
+        self.num_indices = vertex_indices.size
+        self.num_indices_per_strip = vertex_indices.shape[0]
+        self.num_strips = vertex_indices.shape[1]
+        self.num_triangles = num_triangles
+        print(self.num_indices)
 
-        # Bind the position attribute
-        # --------------------------------------
-        stride = data.strides[0]
-        offset = ctypes.c_void_p(0)
-        loc = gl.glGetAttribLocation(self.program, "position")
-        gl.glEnableVertexAttribArray(loc)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, buffer)
-        gl.glVertexAttribPointer(loc, 3, gl.GL_FLOAT, False, stride, offset)
+        self.vertex_buffer = gl.glGenBuffers(1)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vertex_buffer)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.nbytes, vertices, gl.GL_STATIC_DRAW)
 
-        offset = ctypes.c_void_p(data.dtype["position"].itemsize)
-        loc = gl.glGetAttribLocation(self.program, "texcoord")
-        gl.glEnableVertexAttribArray(loc)
-        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, buffer)
-        gl.glVertexAttribPointer(loc, 2, gl.GL_FLOAT, False, stride, offset)
+        gl.glEnableVertexAttribArray(self.position_attrib)
+        gl.glVertexAttribPointer(self.position_attrib, 3, gl.GL_FLOAT, False, vertices.strides[0], ctypes.c_void_p(0))
 
-        self.texture_id = self.load_texture(texture_path)
+        self.uv_buffer = gl.glGenBuffers(1)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.uv_buffer)
+        gl.glBufferData(gl.GL_ARRAY_BUFFER, texture_coords.nbytes, texture_coords, gl.GL_STATIC_DRAW)
+
+        gl.glEnableVertexAttribArray(self.texcoord_attrib)
+        gl.glVertexAttribPointer(self.texcoord_attrib, 2, gl.GL_FLOAT, False, texture_coords.strides[0],
+                                 ctypes.c_void_p(0))
+
+        self.indices_buffer = gl.glGenBuffers(1)
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.indices_buffer)
+        gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, vertex_indices.nbytes, vertex_indices.ravel(), gl.GL_STATIC_DRAW)
+
+        self.colour_texture_id = self.load_texture(texture_path)
+        self.depth_texture_id = self.load_texture(depth_path)
+
+        gl.glUniform1i(self.colour_sampler_uniform, 0)
+        gl.glUniform1i(self.depth_sampler_uniform, 1)
 
         self.view: np.ndarray = np.eye(4, dtype=np.float32)
         self.model: np.ndarray = np.eye(4, dtype=np.float32)
@@ -157,9 +180,49 @@ class QuadRenderer:
         self.update: Optional[Callable[[float], None]] = None
 
     @staticmethod
+    def generate_vertices_and_texture_coordinates(density=0):
+        assert density % 1 == 0, f"Density must be a whole number, got {density}."
+        assert density >= 0, f"Density must be a non-negative number, got {density}."
+
+        x, y = np.linspace(-1, 1, 2 ** density + 1, dtype=np.float32), np.linspace(1, -1, 2 ** density + 1,
+                                                                                   dtype=np.float32)
+        x_texture, y_texture = np.linspace(0, 1, 2 ** density + 1, dtype=np.float32), np.linspace(1, 0,
+                                                                                                  2 ** density + 1,
+                                                                                                  dtype=np.float32)
+
+        vertices = []
+        texture_coordinates = []
+
+        for row in range(len(y)):
+            for col in range(len(x)):
+                vertices.append((x[col], y[row], 0.0))
+                texture_coordinates.append((x_texture[col], y_texture[row]))
+
+        vertex_indices = []
+
+        for i in range(len(x) * (len(x) - 1)):
+            vertex_indices.append(i)
+            vertex_indices.append(i + len(x))
+
+        vertices = np.array(vertices, dtype=np.float32)
+        texture_coordinates = np.array(texture_coordinates, dtype=np.float32)
+        vertex_indices = np.array(vertex_indices, dtype=np.uint32)
+
+        num_triangles = (len(y) - 1) * 2 * (len(x) - 1)
+        vertex_indices = vertex_indices.reshape((2 * len(x), -1))
+
+        return vertices, vertex_indices, texture_coordinates, num_triangles
+
+    @staticmethod
     def load_texture(fp):
         img = Image.open(fp)
         img_data = np.asarray(img)
+
+        if img.mode == 'RGBA':
+            img_data = np.delete(img_data, -1, -1)  # Drop the alpha channel (the last in the channels dimension)
+
+        # Images need to flipped vertically to be displayed the right way up.
+        img_data = np.flip(img_data, axis=0)
 
         texture = gl.glGenTextures(1)
         gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
@@ -195,21 +258,55 @@ class QuadRenderer:
             self.last_frame_time = now
 
     def display(self):
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT)
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+
+        gl.glBindVertexArray(self.vao)
+        gl.glUseProgram(self.program)
 
         mvp = self.projection @ self.view @ self.model
+        gl.glUniformMatrix4fv(self.mvp_uniform, 1, gl.GL_TRUE, mvp)
 
-        loc = gl.glGetUniformLocation(self.program, "mvp")
-        gl.glUniformMatrix4fv(loc, 1, gl.GL_TRUE, mvp)
+        gl.glActiveTexture(gl.GL_TEXTURE0)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.colour_texture_id)
+        gl.glUniform1i(self.colour_sampler_uniform, 0)
 
-        gl.glDrawArrays(gl.GL_TRIANGLE_STRIP, 0, 4)
+        gl.glActiveTexture(gl.GL_TEXTURE1)
+        gl.glBindTexture(gl.GL_TEXTURE_2D, self.depth_texture_id)
+        gl.glUniform1i(self.depth_sampler_uniform, 1)
+
+        gl.glEnableVertexAttribArray(self.position_attrib)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vertex_buffer)
+
+        gl.glEnableVertexAttribArray(self.texcoord_attrib)
+        gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.uv_buffer)
+
+        gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.indices_buffer)
+
+        gl.glDrawElements(gl.GL_TRIANGLE_STRIP, self.num_indices, gl.GL_UNSIGNED_INT, ctypes.c_void_p(0))
+
+        gl.glDisableVertexAttribArray(self.texcoord_attrib)
+        gl.glDisableVertexAttribArray(self.position_attrib)
+
+        gl.glBindVertexArray(0)
+
+        gl.glUseProgram(0)
+
         glut.glutSwapBuffers()
         glut.glutPostRedisplay()
+
+    def free_buffers(self):
+        gl.glDeleteBuffers(1, self.vertex_buffer)
+        gl.glDeleteBuffers(1, self.uv_buffer)
+        gl.glDeleteBuffers(1, self.indices_buffer)
+        gl.glDeleteProgram(self.program)
+        gl.glDeleteTextures(2, [self.colour_texture_id, self.depth_texture_id])
+        gl.glDeleteVertexArrays(1, self.vao)
 
     def reshape(self, width, height):
         gl.glViewport(0, 0, width, height)
 
     def keyboard(self, key, x, y):
+        # TODO: Add ability to zoom in.
         if key == KeyByteCodes.ESCAPE:
             sys.exit()
 
@@ -302,6 +399,7 @@ class QuadRenderer:
 
 if __name__ == '__main__':
     texture_path = "brick_wall.jpg"
+    depth_path = "depth.png"
 
     fps = 144
     window_width = 512
@@ -312,9 +410,8 @@ if __name__ == '__main__':
     near = 0.0
     far = 1000.0
 
-    renderer = QuadRenderer(texture_path, fps=fps, window_size=(window_width, window_height))
-
-    renderer.model = QuadRenderer.get_scale_matrix(1.5) @ renderer.model
+    renderer = QuadRenderer(texture_path, depth_path, fps=fps, window_size=(window_width, window_height), mesh_density=8)
+    renderer.model = QuadRenderer.get_scale_matrix(1.0) @ renderer.model
     QuadRenderer.log(f"Model: \n{renderer.model}")
 
     renderer.view = QuadRenderer.get_rotation_matrix(angle=30, axis=Axis.X, degrees=True) @ renderer.view
@@ -331,7 +428,7 @@ if __name__ == '__main__':
     )
     QuadRenderer.log(f"Projection: \n{renderer.projection}")
 
-
+    # TODO: Record rendered colour and depth as RGBA frames.
     def update_func(delta):
         t = QuadRenderer.get_rotation_matrix(6 * delta, axis=Axis.Y, degrees=True)
 
@@ -340,4 +437,8 @@ if __name__ == '__main__':
 
 
     renderer.update = update_func
-    renderer.run()
+
+    try:
+        renderer.run()
+    finally:
+        renderer.free_buffers()
