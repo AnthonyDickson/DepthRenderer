@@ -1,20 +1,15 @@
-# -----------------------------------------------------------------------------
-# Python & OpenGL for Scientific Visualization
-# www.labri.fr/perso/nrougier/python+opengl
-# Copyright (c) 2017, Nicolas P. Rougier
-# Distributed under the 2-Clause BSD License.
-# -----------------------------------------------------------------------------
+import ctypes
 import datetime
 import enum
 import sys
-import ctypes
+from pathlib import Path
 from typing import Callable, Optional
 
-import numpy as np
 import OpenGL.GL as gl
 import OpenGL.GLUT as glut
-
-from PIL import Image
+import numpy as np
+import plac
+from PIL import Image, ImageOps
 
 
 class KeyByteCodes:
@@ -28,42 +23,24 @@ class Axis(enum.Enum):
 
 
 class QuadRenderer:
-    def __init__(self, texture_path, depth_path, window_name='Hello world!', window_size=(512, 512), fps=60, mesh_density=0):
+    def __init__(self, texture_path, depth_path,
+                 vertex_shader_path='shader.vert',
+                 fragment_shader_path='shader.frag',
+                 window_name='Hello world!', window_size=(512, 512), fps=60,
+                 mesh_density=0):
         """
         :param texture_path: The path to the texture file to render on the quad.
         :param window_name: The name of the window to use for rendering.
         :param window_size: The width and height of the window to use for rendering.
         :param fps: The target frames per second to draw at.
         """
-        # TODO: Load shaders from disk.
         # TODO: Get vertex displacement in shaders working properly.
-        vertex_code = """
-            uniform mat4   mvp;           // The model, view and projection matrices as one matrix.
-            attribute vec3 position;      // Vertex position
-            attribute vec2 texcoord;   // Vertex texture coordinates
-            varying vec2   v_texcoord;       // Interpolated fragment texture coordinates (out)
-            
-            uniform sampler2D colourSampler; // Texture
-            uniform sampler2D depthSampler; // Depth Texture
-    
-            void main()
-            {
-              float displacement = tex2D(depthSampler, v_texcoord).r / 255.0;
-              gl_Position = mvp * vec4(position.x, position.y, position.z + displacement, 1.0);
-              v_texcoord = texcoord;
-            }
-        """
 
-        fragment_code = """
-            uniform sampler2D colourSampler; // Texture
-            uniform sampler2D depthSampler; // Depth Texture  
-            varying vec2 v_texcoord;   // Interpolated fragment texture coordinates (in)
-    
-            void main()
-            {
-              gl_FragColor = texture2D(colourSampler, v_texcoord);
-            } 
-        """
+        with open(vertex_shader_path, 'r') as f:
+            vertex_code = f.read()
+
+        with open(fragment_shader_path, 'r') as f:
+            fragment_code = f.read()
 
         # GLUT init
         # --------------------------------------
@@ -166,6 +143,7 @@ class QuadRenderer:
         gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, vertex_indices.nbytes, vertex_indices.ravel(), gl.GL_STATIC_DRAW)
 
         self.colour_texture_id = self.load_texture(texture_path)
+        # TODO: Add ability to scale depth map (e.g. for NYU depth maps).
         self.depth_texture_id = self.load_texture(depth_path)
 
         gl.glUniform1i(self.colour_sampler_uniform, 0)
@@ -181,6 +159,7 @@ class QuadRenderer:
 
     @staticmethod
     def generate_vertices_and_texture_coordinates(density=0):
+        # TODO: Adapt grid dimensions to image/depth dimensions.
         assert density % 1 == 0, f"Density must be a whole number, got {density}."
         assert density >= 0, f"Density must be a non-negative number, got {density}."
 
@@ -397,26 +376,64 @@ class QuadRenderer:
         return scale_matrix
 
 
-if __name__ == '__main__':
-    texture_path = "brick_wall.jpg"
-    depth_path = "depth.png"
+@plac.annotations(
+    image_path=plac.Annotation(
+        help='The path to the colour image.',
+        kind='positional',
+        type=Path
+    ),
+    depth_path=plac.Annotation(
+        help='The path to depth map corresponding to the colour image.',
+        kind='positional',
+        type=Path
+    ),
+    fps=plac.Annotation(
+        help='The target frames per second at which to render.',
+        kind='option',
+        type=float
+    ),
+    window_width=plac.Annotation(
+        help='The width and height of the window to display the rendered images in.',
+        kind='option',
+        type=int
+    ),
+    window_height=plac.Annotation(
+        help='The height of the window to display the rendered images in.',
+        kind='option',
+        type=int
+    ),
+    mesh_density=plac.Annotation(
+        help='How fine the generated mesh should be. Increasing this value by one roughly quadruples the number of vertices.',
+        kind='option',
+        type=int
+    )
+)
+def main(image_path="brick_wall.jpg", depth_path="depth.png", fps=60, window_width=512, window_height=512, mesh_density=8):
+    """
+    Render a colour/depth image pair on a grid mesh in OpenGL using the depth map to displace vertices on the mesh.
 
-    fps = 144
-    window_width = 512
-    window_height = 512
-
+    :param image_path: The path to the colour image.
+    :param depth_path: The path to depth map corresponding to the colour image.
+    :param fps: The target frames per second at which to render.
+    :param window_width: The width of the window to display the rendered images in.
+    :param window_height: The height of the window to display the rendered images in.
+    :param mesh_density: How fine the generated mesh should be. Increasing this value by one roughly quadruples the
+    number of vertices.
+    """
+    # TODO: Set window width/height according to image dimensions.
     fov_y = 60
     aspect_ratio = window_width / window_height
     near = 0.0
     far = 1000.0
 
-    renderer = QuadRenderer(texture_path, depth_path, fps=fps, window_size=(window_width, window_height), mesh_density=8)
+    renderer = QuadRenderer(image_path, depth_path, fps=fps, window_size=(window_width, window_height),
+                            mesh_density=mesh_density)
     renderer.model = QuadRenderer.get_scale_matrix(1.0) @ renderer.model
     QuadRenderer.log(f"Model: \n{renderer.model}")
 
     renderer.view = QuadRenderer.get_rotation_matrix(angle=30, axis=Axis.X, degrees=True) @ renderer.view
     QuadRenderer.log(f"View: \n{renderer.view}")
-    renderer.view = QuadRenderer.get_translation_matrix(dz=-100) @ renderer.view
+    renderer.view = QuadRenderer.get_translation_matrix(dz=-70) @ renderer.view
     QuadRenderer.log(f"View: \n{renderer.view}")
 
     renderer.projection = np.array(
@@ -428,13 +445,56 @@ if __name__ == '__main__':
     )
     QuadRenderer.log(f"Projection: \n{renderer.projection}")
 
-    # TODO: Record rendered colour and depth as RGBA frames.
+    class Task:
+        def __init__(self, task):
+            self.task = task
+
+        def __call__(self, *args, **kwargs):
+            self.has_done = True
+            return self.task(*args, **kwargs)
+
+    class OneTimeTask(Task):
+        def __init__(self, task):
+            super().__init__(task)
+
+            self.has_done = False
+
+        def __call__(self, *args, **kwargs):
+            if not self.has_done:
+                self.has_done = True
+                return super().__call__(*args, **kwargs)
+
+    class RecurringTask(Task):
+        def __init__(self, task, frequency=1):
+            super().__init__(task)
+            self.frequency = frequency
+            self.call_count = 0
+
+        def __call__(self, *args, **kwargs):
+            self.call_count += 1
+
+            if self.call_count % self.frequency == 0:
+                return super().__call__(*args, **kwargs)
+
+    def render_to_image(output_path, file_format='PNG'):
+        gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+        # TODO: Get image width/height from window size.
+        data = gl.glReadPixels(0, 0, 512, 512, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
+        image = Image.frombytes("RGBA", (512, 512), data)
+        image = ImageOps.flip(image)  # in my case image is flipped top-bottom for some reason
+        image.save(output_path, file_format)
+
+    render_image = OneTimeTask(render_to_image)
+    render_frames = RecurringTask(render_to_image, frequency=fps)
+
     def update_func(delta):
         t = QuadRenderer.get_rotation_matrix(6 * delta, axis=Axis.Y, degrees=True)
 
         renderer.model = t @ renderer.model
-        pass
 
+        # TODO: Make output path for rendered frames configurable.
+        render_image('sample_frame.png')
+        render_frames(f"frame_{render_frames.call_count:03d}.png")
 
     renderer.update = update_func
 
@@ -442,3 +502,7 @@ if __name__ == '__main__':
         renderer.run()
     finally:
         renderer.free_buffers()
+
+
+if __name__ == '__main__':
+    plac.call(main)
