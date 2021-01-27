@@ -1,6 +1,7 @@
 import ctypes
 import datetime
 import enum
+import os
 import sys
 from pathlib import Path
 from typing import Callable, Optional
@@ -515,10 +516,15 @@ def load_depth(fp, scaling_factor=1.0):
         help='How fine the generated mesh should be. Increasing this value by one roughly quadruples the number of vertices.',
         kind='option',
         type=int
+    ),
+    output_path=plac.Annotation(
+        help='The path to save any output frames to.',
+        kind='option',
+        type=Path
     )
 )
 def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_factor=1.0, displacement_factor=1.0,
-         fps=60, window_width=512, window_height=512, mesh_density=8):
+         fps=60, window_width=512, window_height=512, mesh_density=8, output_path='frames'):
     """
     Render a colour/depth image pair on a grid mesh in OpenGL using the depth map to displace vertices on the mesh.
 
@@ -530,7 +536,8 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     :param window_width: The width of the window to display the rendered images in.
     :param window_height: The height of the window to display the rendered images in.
     :param mesh_density: How fine the generated mesh should be. Increasing this value by one roughly quadruples the
-    number of vertices.
+        number of vertices.
+    :param output_path: The path to save any output frames to.
     """
     colour = load_image(image_path)
     depth = load_depth(depth_path, depth_scaling_factor)
@@ -608,14 +615,15 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     render_image = OneTimeTask(render_to_image)
     render_frames = RecurringTask(render_to_image, frequency=fps)
 
+    os.makedirs(output_path, exist_ok=True)
+
     def update_func(delta):
         t = QuadRenderer.get_rotation_matrix(6 * delta, axis=Axis.Y, degrees=True)
 
         renderer.model = t @ renderer.model
 
-        # TODO: Make output path for rendered frames configurable.
-        render_image('sample_frame.png')
-        render_frames(f"frame_{render_frames.call_count:03d}.png")
+        render_image(os.path.join(output_path, 'sample_frame.png'))
+        render_frames(os.path.join(output_path, f"frame_{render_frames.call_count:03d}.png"))
 
     renderer.update = update_func
 
