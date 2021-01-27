@@ -14,6 +14,8 @@ from PIL import Image, ImageOps
 
 class KeyByteCodes:
     ESCAPE = b'\x1b'
+    ONE = b'1'
+    TWO = b'2'
 
 
 class Axis(enum.Enum):
@@ -22,51 +24,24 @@ class Axis(enum.Enum):
     Z = enum.auto()
 
 
-class QuadRenderer:
-    def __init__(self, colour_image, depth_map,
-                 vertex_shader_path='shader.vert',
-                 fragment_shader_path='shader.frag',
-                 window_name='Hello world!', window_size=(512, 512), fps=60,
-                 mesh_density=0):
-        """
-        :param colour_image: The colour image (texture) to render on the quad.
-        :param depth_map: The depth map to use for displacing the rendered mesh.
-        :param window_name: The name of the window to use for rendering.
-        :param window_size: The width and height of the window to use for rendering.
-        :param fps: The target frames per second to draw at.
-        """
-        # TODO: Get vertex displacement in shaders working properly.
+class ShaderProgram:
+    def __init__(self, vertex_shader_path, fragment_shader_path):
+        self.program = 0
+        self.uniforms = dict()
+        self.attributes = dict()
 
-        with open(vertex_shader_path, 'r') as f:
+        self.vertex_shader_path = vertex_shader_path
+        self.fragment_shader_path = fragment_shader_path
+
+    def compile_and_link(self):
+        with open(self.vertex_shader_path, 'r') as f:
             vertex_code = f.read()
 
-        with open(fragment_shader_path, 'r') as f:
+        with open(self.fragment_shader_path, 'r') as f:
             fragment_code = f.read()
 
-        # GLUT init
-        # --------------------------------------
-        glut.glutInit()
-        glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGBA)
-        glut.glutCreateWindow(window_name)
-        glut.glutReshapeWindow(*window_size)
-        glut.glutReshapeFunc(self.reshape)
-        glut.glutIdleFunc(self.idle)
-        glut.glutDisplayFunc(self.display)
-        glut.glutKeyboardFunc(self.keyboard)
-
-        self.log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
-        self.log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
-        self.log(f"GL_VENDOR: {str(gl.glGetString(gl.GL_VENDOR), 'utf-8')}")
-        self.log(f"GLUT_API_VERSION: {glut.GLUT_API_VERSION}")
-
-        gl.glEnable(gl.GL_CULL_FACE)
-        # TODO: Get program working with depth test.
-        # gl.glEnable(gl.GL_DEPTH_TEST)
-
-        # Build & activate program
-        # --------------------------------------
-        # Request a program and shader slots from GPU
         self.program = gl.glCreateProgram()
+
         vertex = gl.glCreateShader(gl.GL_VERTEX_SHADER)
         fragment = gl.glCreateShader(gl.GL_FRAGMENT_SHADER)
 
@@ -102,15 +77,103 @@ class QuadRenderer:
         gl.glDetachShader(self.program, vertex)
         gl.glDetachShader(self.program, fragment)
 
+    def generate_uniform_location(self, uniform_name):
+        self.uniforms[uniform_name] = gl.glGetUniformLocation(self.program, uniform_name)
+
+    def generate_attribute_location(self, attribute_name):
+        self.attributes[attribute_name] = gl.glGetAttribLocation(self.program, attribute_name)
+
+    def get_uniform_location(self, uniform_name):
+        return self.uniforms.get(uniform_name, -1)
+
+    def get_attribute_location(self, attribute_name):
+        return self.attributes.get(attribute_name, -1)
+
+    def bind(self):
         # Make program the default program
         gl.glUseProgram(self.program)
 
-        self.colour_sampler_uniform = gl.glGetUniformLocation(self.program, "colourSampler")
-        self.depth_sampler_uniform = gl.glGetUniformLocation(self.program, "depthSampler")
-        self.mvp_uniform = gl.glGetUniformLocation(self.program, "mvp")
+    def unbind(self):
+        gl.glUseProgram(0)
 
-        self.position_attrib = gl.glGetAttribLocation(self.program, "position")
-        self.texcoord_attrib = gl.glGetAttribLocation(self.program, "texcoord")
+    def cleanup(self):
+        gl.glDeleteProgram(self.program)
+
+
+class QuadRenderer:
+    def __init__(self, colour_image, depth_map,
+                 default_shader_program: ShaderProgram,
+                 debug_shader_program: Optional[ShaderProgram] = None,
+                 displacement_factor=1.0,
+                 window_name='Hello world!', window_size=(512, 512), fps=60,
+                 mesh_density=0):
+        """
+        :param colour_image: The colour image (texture) to render on the quad.
+        :param depth_map: The depth map to use for displacing the rendered mesh.
+        :param window_name: The name of the window to use for rendering.
+        :param window_size: The width and height of the window to use for rendering.
+        :param fps: The target frames per second to draw at.
+        """
+        # TODO: Get vertex displacement in shaders working properly.
+        # GLUT init
+        # --------------------------------------
+        glut.glutInit()
+        glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGBA)
+        glut.glutCreateWindow(window_name)
+        glut.glutReshapeWindow(*window_size)
+        glut.glutReshapeFunc(self.reshape)
+        glut.glutIdleFunc(self.idle)
+        glut.glutDisplayFunc(self.display)
+        glut.glutKeyboardFunc(self.keyboard)
+
+        self.log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
+        self.log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
+        self.log(f"GL_VENDOR: {str(gl.glGetString(gl.GL_VENDOR), 'utf-8')}")
+        self.log(f"GLUT_API_VERSION: {glut.GLUT_API_VERSION}")
+
+        gl.glEnable(gl.GL_CULL_FACE)
+        # TODO: Get program working with depth test.
+        # gl.glEnable(gl.GL_DEPTH_TEST)
+
+        # Build & activate program
+        # --------------------------------------
+        # Request a program and shader slots from GPU
+        self.displacement_factor = displacement_factor
+        self.default_shader = default_shader_program
+        self.debug_shader = debug_shader_program
+
+        self.colour_sampler_uniform = "colourSampler"
+        self.depth_sampler_uniform = "depthSampler"
+        self.mvp_uniform = "mvp"
+        self.displacement_uniform = "displacementFactor"
+
+        self.position_attribute = "position"
+        self.texcoord_attribute = "texcoord"
+
+        def setup_shader_program(shader):
+            shader.compile_and_link()
+            shader.bind()
+
+            shader.generate_uniform_location(self.colour_sampler_uniform)
+            shader.generate_uniform_location(self.depth_sampler_uniform)
+            shader.generate_uniform_location(self.mvp_uniform)
+            shader.generate_uniform_location(self.displacement_uniform)
+
+            shader.generate_attribute_location(self.position_attribute)
+            shader.generate_attribute_location(self.texcoord_attribute)
+
+            gl.glUniform1i(shader.get_uniform_location(self.colour_sampler_uniform), 0)
+            gl.glUniform1i(shader.get_uniform_location(self.depth_sampler_uniform), 1)
+            gl.glUniform1f(shader.get_uniform_location(self.displacement_uniform), self.displacement_factor)
+            shader.unbind()
+
+        setup_shader_program(self.default_shader)
+
+        if self.debug_shader is not None:
+            setup_shader_program(self.debug_shader)
+
+        self.shader = self.default_shader
+        self.shader.bind()
 
         self.vao = gl.glGenVertexArrays(1)
         gl.glBindVertexArray(self.vao)
@@ -128,15 +191,15 @@ class QuadRenderer:
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vertex_buffer)
         gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.nbytes, vertices, gl.GL_STATIC_DRAW)
 
-        gl.glEnableVertexAttribArray(self.position_attrib)
-        gl.glVertexAttribPointer(self.position_attrib, 3, gl.GL_FLOAT, False, vertices.strides[0], ctypes.c_void_p(0))
+        gl.glEnableVertexAttribArray(self.shader.get_attribute_location(self.position_attribute))
+        gl.glVertexAttribPointer(self.shader.get_attribute_location(self.position_attribute), 3, gl.GL_FLOAT, False, vertices.strides[0], ctypes.c_void_p(0))
 
         self.uv_buffer = gl.glGenBuffers(1)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.uv_buffer)
         gl.glBufferData(gl.GL_ARRAY_BUFFER, texture_coords.nbytes, texture_coords, gl.GL_STATIC_DRAW)
 
-        gl.glEnableVertexAttribArray(self.texcoord_attrib)
-        gl.glVertexAttribPointer(self.texcoord_attrib, 2, gl.GL_FLOAT, False, texture_coords.strides[0],
+        gl.glEnableVertexAttribArray(self.shader.get_attribute_location(self.texcoord_attribute))
+        gl.glVertexAttribPointer(self.shader.get_attribute_location(self.texcoord_attribute), 2, gl.GL_FLOAT, False, texture_coords.strides[0],
                                  ctypes.c_void_p(0))
 
         self.indices_buffer = gl.glGenBuffers(1)
@@ -145,9 +208,6 @@ class QuadRenderer:
 
         self.colour_texture_id = self.load_texture(colour_image)
         self.depth_texture_id = self.load_texture(depth_map)
-
-        gl.glUniform1i(self.colour_sampler_uniform, 0)
-        gl.glUniform1i(self.depth_sampler_uniform, 1)
 
         self.view: np.ndarray = np.eye(4, dtype=np.float32)
         self.model: np.ndarray = np.eye(4, dtype=np.float32)
@@ -236,35 +296,35 @@ class QuadRenderer:
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
         gl.glBindVertexArray(self.vao)
-        gl.glUseProgram(self.program)
+        self.shader.bind()
 
         mvp = self.projection @ self.view @ self.model
-        gl.glUniformMatrix4fv(self.mvp_uniform, 1, gl.GL_TRUE, mvp)
+        gl.glUniformMatrix4fv(self.shader.get_uniform_location(self.mvp_uniform), 1, gl.GL_TRUE, mvp)
 
         gl.glActiveTexture(gl.GL_TEXTURE0)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.colour_texture_id)
-        gl.glUniform1i(self.colour_sampler_uniform, 0)
+        gl.glUniform1i(self.shader.get_uniform_location(self.colour_sampler_uniform), 0)
 
         gl.glActiveTexture(gl.GL_TEXTURE1)
         gl.glBindTexture(gl.GL_TEXTURE_2D, self.depth_texture_id)
-        gl.glUniform1i(self.depth_sampler_uniform, 1)
+        gl.glUniform1i(self.shader.get_uniform_location(self.depth_sampler_uniform), 1)
 
-        gl.glEnableVertexAttribArray(self.position_attrib)
+        gl.glEnableVertexAttribArray(self.shader.get_attribute_location(self.position_attribute))
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vertex_buffer)
 
-        gl.glEnableVertexAttribArray(self.texcoord_attrib)
+        gl.glEnableVertexAttribArray(self.shader.get_attribute_location(self.texcoord_attribute))
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.uv_buffer)
 
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.indices_buffer)
 
         gl.glDrawElements(gl.GL_TRIANGLE_STRIP, self.num_indices, gl.GL_UNSIGNED_INT, ctypes.c_void_p(0))
 
-        gl.glDisableVertexAttribArray(self.texcoord_attrib)
-        gl.glDisableVertexAttribArray(self.position_attrib)
+        gl.glDisableVertexAttribArray(self.shader.get_attribute_location(self.texcoord_attribute))
+        gl.glDisableVertexAttribArray(self.shader.get_attribute_location(self.position_attribute))
 
         gl.glBindVertexArray(0)
 
-        gl.glUseProgram(0)
+        self.shader.unbind()
 
         glut.glutSwapBuffers()
         glut.glutPostRedisplay()
@@ -273,7 +333,8 @@ class QuadRenderer:
         gl.glDeleteBuffers(1, self.vertex_buffer)
         gl.glDeleteBuffers(1, self.uv_buffer)
         gl.glDeleteBuffers(1, self.indices_buffer)
-        gl.glDeleteProgram(self.program)
+        self.default_shader.cleanup()
+        self.debug_shader.cleanup()
         gl.glDeleteTextures(2, [self.colour_texture_id, self.depth_texture_id])
         gl.glDeleteVertexArrays(1, self.vao)
 
@@ -284,6 +345,13 @@ class QuadRenderer:
         # TODO: Add ability to zoom in.
         if key == KeyByteCodes.ESCAPE:
             sys.exit()
+        # TODO: Print key mappings to console on program launch.
+        elif key == KeyByteCodes.ONE:
+            self.shader.unbind()
+            self.shader = self.default_shader
+        elif key == KeyByteCodes.TWO:
+            self.shader.unbind()
+            self.shader = self.debug_shader
 
     @staticmethod
     def log(message):
@@ -423,6 +491,11 @@ def load_depth(fp, scaling_factor=1.0):
         kind='option',
         type=float
     ),
+    displacement_factor=plac.Annotation(
+        help='A multiplicative scaling factor to scale the normalised depth value when displacing the mesh vertices. ',
+        kind='option',
+        type=float
+    ),
     fps=plac.Annotation(
         help='The target frames per second at which to render.',
         kind='option',
@@ -444,14 +517,15 @@ def load_depth(fp, scaling_factor=1.0):
         type=int
     )
 )
-def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_factor=1.0, fps=60, window_width=512, window_height=512,
-         mesh_density=8):
+def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_factor=1.0, displacement_factor=1.0,
+         fps=60, window_width=512, window_height=512, mesh_density=8):
     """
     Render a colour/depth image pair on a grid mesh in OpenGL using the depth map to displace vertices on the mesh.
 
     :param image_path: The path to the colour image.
     :param depth_path: The path to depth map corresponding to the colour image.
     :param depth_scaling_factor: The scaling factor to apply to the depth maps (depth values are divided by this value).
+    :param displacement_factor: A multiplicative scaling factor to scale the normalised depth value when displacing the mesh vertices.
     :param fps: The target frames per second at which to render.
     :param window_width: The width of the window to display the rendered images in.
     :param window_height: The height of the window to display the rendered images in.
@@ -467,8 +541,14 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     near = 0.0
     far = 1000.0
 
-    renderer = QuadRenderer(colour, depth, fps=fps, window_size=(window_width, window_height),
-                            mesh_density=mesh_density)
+    # TODO: Make shader source paths configurable.
+    default_shader = ShaderProgram(vertex_shader_path='shader.vert', fragment_shader_path='shader.frag')
+    debug_shader = ShaderProgram(vertex_shader_path='shader.vert', fragment_shader_path='depth_debug.frag')
+
+    renderer = QuadRenderer(colour, depth,
+                            default_shader_program=default_shader, debug_shader_program=debug_shader,
+                            displacement_factor=displacement_factor,
+                            fps=fps, window_size=(window_width, window_height), mesh_density=mesh_density)
     renderer.model = QuadRenderer.get_scale_matrix(1.0) @ renderer.model
     QuadRenderer.log(f"Model: \n{renderer.model}")
 
