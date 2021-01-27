@@ -23,13 +23,14 @@ class Axis(enum.Enum):
 
 
 class QuadRenderer:
-    def __init__(self, texture_path, depth_path,
+    def __init__(self, colour_image, depth_map,
                  vertex_shader_path='shader.vert',
                  fragment_shader_path='shader.frag',
                  window_name='Hello world!', window_size=(512, 512), fps=60,
                  mesh_density=0):
         """
-        :param texture_path: The path to the texture file to render on the quad.
+        :param colour_image: The colour image (texture) to render on the quad.
+        :param depth_map: The depth map to use for displacing the rendered mesh.
         :param window_name: The name of the window to use for rendering.
         :param window_size: The width and height of the window to use for rendering.
         :param fps: The target frames per second to draw at.
@@ -142,9 +143,8 @@ class QuadRenderer:
         gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.indices_buffer)
         gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, vertex_indices.nbytes, vertex_indices.ravel(), gl.GL_STATIC_DRAW)
 
-        self.colour_texture_id = self.load_texture(texture_path)
-        # TODO: Add ability to scale depth map (e.g. for NYU depth maps).
-        self.depth_texture_id = self.load_texture(depth_path)
+        self.colour_texture_id = self.load_texture(colour_image)
+        self.depth_texture_id = self.load_texture(depth_map)
 
         gl.glUniform1i(self.colour_sampler_uniform, 0)
         gl.glUniform1i(self.depth_sampler_uniform, 1)
@@ -193,15 +193,12 @@ class QuadRenderer:
         return vertices, vertex_indices, texture_coordinates, num_triangles
 
     @staticmethod
-    def load_texture(fp):
-        img = Image.open(fp)
-        img_data = np.asarray(img)
+    def load_texture(image):
+        assert isinstance(image, np.ndarray) and len(image.shape) == 3, \
+            f"Image should be a image stored in a numpy array with exactly three dimensions (height, width and colour " \
+            f"channels). Got an image of type {type(image)} with {len(image.shape)} dimensions."
 
-        if img.mode == 'RGBA':
-            img_data = np.delete(img_data, -1, -1)  # Drop the alpha channel (the last in the channels dimension)
-
-        # Images need to flipped vertically to be displayed the right way up.
-        img_data = np.flip(img_data, axis=0)
+        height, width, _ = image.shape
 
         texture = gl.glGenTextures(1)
         gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 1)
@@ -213,8 +210,7 @@ class QuadRenderer:
         gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP)
         gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
         gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, img.size[0], img.size[1], 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE,
-                        img_data)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, image)
 
         return texture
 
@@ -376,6 +372,41 @@ class QuadRenderer:
         return scale_matrix
 
 
+def load_image(fp):
+    img = Image.open(fp)
+    img_data = np.asarray(img)
+
+    if img.mode == 'RGBA':
+        img_data = np.delete(img_data, -1, -1)  # Drop the alpha channel (the last in the channels dimension)
+
+    # Images need to flipped vertically to be displayed the right way up.
+    img = np.flip(img_data, axis=0)
+
+    return img
+
+
+def load_depth(fp, scaling_factor=1.0):
+    """
+    Load a depth map from disk, using an optional scaling factor to scale the depth values.
+
+    :param fp: The file pointer (string path or file object) for the depth map file.
+    :param scaling_factor: (optional) The scaling factor to apply to the depth map. The depth values are divided by this
+        value.
+    :return: The loaded depth map as a numpy array.
+    """
+    depth_map = load_image(fp) / scaling_factor
+
+    if len(depth_map.shape) == 2:
+        depth_map = np.expand_dims(depth_map, axis=2)
+
+    depth_map = np.concatenate(3 * [depth_map], axis=2)
+
+    depth_map = (depth_map - depth_map.min()) / (depth_map.max() - depth_map.min())
+    depth_map = (255 * depth_map).astype(np.uint8)
+
+    return depth_map
+
+
 @plac.annotations(
     image_path=plac.Annotation(
         help='The path to the colour image.',
@@ -386,6 +417,11 @@ class QuadRenderer:
         help='The path to depth map corresponding to the colour image.',
         kind='positional',
         type=Path
+    ),
+    depth_scaling_factor=plac.Annotation(
+        help='The scaling factor to apply to the depth maps (depth values are divided by this value).',
+        kind='option',
+        type=float
     ),
     fps=plac.Annotation(
         help='The target frames per second at which to render.',
@@ -408,25 +444,30 @@ class QuadRenderer:
         type=int
     )
 )
-def main(image_path="brick_wall.jpg", depth_path="depth.png", fps=60, window_width=512, window_height=512, mesh_density=8):
+def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_factor=1.0, fps=60, window_width=512, window_height=512,
+         mesh_density=8):
     """
     Render a colour/depth image pair on a grid mesh in OpenGL using the depth map to displace vertices on the mesh.
 
     :param image_path: The path to the colour image.
     :param depth_path: The path to depth map corresponding to the colour image.
+    :param depth_scaling_factor: The scaling factor to apply to the depth maps (depth values are divided by this value).
     :param fps: The target frames per second at which to render.
     :param window_width: The width of the window to display the rendered images in.
     :param window_height: The height of the window to display the rendered images in.
     :param mesh_density: How fine the generated mesh should be. Increasing this value by one roughly quadruples the
     number of vertices.
     """
+    colour = load_image(image_path)
+    depth = load_depth(depth_path, depth_scaling_factor)
+
     # TODO: Set window width/height according to image dimensions.
     fov_y = 60
     aspect_ratio = window_width / window_height
     near = 0.0
     far = 1000.0
 
-    renderer = QuadRenderer(image_path, depth_path, fps=fps, window_size=(window_width, window_height),
+    renderer = QuadRenderer(colour, depth, fps=fps, window_size=(window_width, window_height),
                             mesh_density=mesh_density)
     renderer.model = QuadRenderer.get_scale_matrix(1.0) @ renderer.model
     QuadRenderer.log(f"Model: \n{renderer.model}")
