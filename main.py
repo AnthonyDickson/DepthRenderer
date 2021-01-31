@@ -24,15 +24,217 @@ class KeyByteCodes:
     SPACE = b' '
 
 
-class MouseButton:
-    SCROLL_WHEEL_UP = 3
-    SCROLL_WHEEL_DOWN = 4
-
-
 class Axis(enum.Enum):
     X = enum.auto()
     Y = enum.auto()
     Z = enum.auto()
+
+
+def log(message):
+    """
+    Print a message to stdout with a timestamp.
+    :param message: The message to print.
+    """
+    print(f"[{datetime.datetime.now()}] {message}")
+
+
+def get_perspective_matrix(fov_y, aspect_ratio, near=0.01, far=1000.0):
+    """
+    Get a 4x4 perspective matrix.
+
+    :param fov_y: The field of view angle (degrees) visible along the y-axis.
+    :param aspect_ratio: The ratio of the width/height of the viewport.
+    :param near: The z-coordinate for the near plane.
+    :param far: The z-coordinate for the far plane.
+    :return: The perspective matrix.
+    """
+    return np.array(
+        [[fov_y / aspect_ratio, 0, 0, 0],
+         [0, fov_y, 0, 0],
+         [0, 0, (far + near) / (near - far), (2 * near * far) / (near - far)],
+         [0, 0, -1, 0]],
+        dtype=np.float32
+    )
+
+
+def get_rotation_matrix(angle, axis=Axis.X, dtype=np.float32, degrees=False):
+    """
+    Get the 4x4 rotation matrix for the given angle and rotation axis.
+
+    :param angle: The angle to rotate by.
+    :param axis: The axis to rotate about.
+    :param dtype: The data type of the rotation matrix.
+    :param degrees: Whether the angle is in degrees (=True) or radians (=False).
+    :return: The rotation matrix.
+    """
+    rotation_matrix = np.eye(4, dtype=dtype)
+
+    if degrees:
+        angle = np.deg2rad(angle)
+
+    if axis == Axis.X:
+        rotation_matrix[1, 1] = np.cos(angle)
+        rotation_matrix[1, 2] = -np.sin(angle)
+        rotation_matrix[2, 1] = np.sin(angle)
+        rotation_matrix[2, 2] = np.cos(angle)
+    elif axis == Axis.Y:
+        rotation_matrix[0, 0] = np.cos(angle)
+        rotation_matrix[0, 2] = np.sin(angle)
+        rotation_matrix[2, 0] = -np.sin(angle)
+        rotation_matrix[2, 2] = np.cos(angle)
+    elif axis == Axis.Z:
+        rotation_matrix[0, 0] = np.cos(angle)
+        rotation_matrix[0, 1] = -np.sin(angle)
+        rotation_matrix[1, 0] = np.sin(angle)
+        rotation_matrix[1, 1] = np.cos(angle)
+    else:
+        raise RuntimeError(f"Invalid value for argument 'axis'; Expected type {Axis}, got {type(axis)}.")
+
+    return rotation_matrix
+
+
+def get_translation_matrix(dx: float = 0, dy: float = 0, dz: float = 0, dtype=np.float32):
+    """
+    Get the 4x4 translation matrix for the given displacement values across the x, y and z axes.
+
+    :param dx: The translation on the x axis.
+    :param dy: The translation on the y axis.
+    :param dz: The translation on the z axis.
+    :param dtype: The data type of the translation matrix.
+    :return: The 4x4 translation matrix.
+    """
+    translation_matrix = np.eye(4, dtype=dtype)
+
+    translation_matrix[0, 3] = dx
+    translation_matrix[1, 3] = dy
+    translation_matrix[2, 3] = dz
+
+    return translation_matrix
+
+
+def get_scale_matrix(sx: float = 1, sy: Optional[float] = None, sz: Optional[float] = None, dtype=np.float32):
+    """
+    Get the 4x4 scale matrix for the given scales for the x, y and z axes.
+
+    :param sx: The scale of the x axis. If either `sy` or `sz` are set to `None`, then this value will be used for all axes.
+    :param sy: The scale of the y axis.
+    :param sz: The scale of the z axis.
+    :param dtype: The data type of the scale matrix.
+    :return: The 4x4 scale matrix.
+    """
+    scale_matrix = np.eye(4, dtype=dtype)
+
+    if sy is None or sz is None:
+        sy = sx
+        sz = sx
+
+    scale_matrix[0, 0] = sx
+    scale_matrix[1, 1] = sy
+    scale_matrix[2, 2] = sz
+
+    return scale_matrix
+
+
+class Camera:
+    def __init__(self, window_size, fov_y=60, near=0.01, far=1000.0, is_debug_mode=False):
+        # TODO: Update window size on window resize.
+        self.window_size = window_size
+
+        self.fov_y = fov_y
+        self.original_fov_y = fov_y
+        self.near = near
+        self.far = far
+
+        self.view = np.eye(4, dtype=np.float32)
+        self.projection = get_perspective_matrix(self.fov_y, self.aspect_ratio, near=near, far=far)
+
+        self.prev_mouse_x = None
+        self.prev_mouse_y = None
+        self.is_scroll_wheel_down = False
+
+        self.is_debug_mode = is_debug_mode
+
+    @property
+    def aspect_ratio(self):
+        return self.window_width / self.window_height
+
+    @property
+    def window_width(self):
+        return self.window_size[0]
+
+    @property
+    def window_height(self):
+        return self.window_size[1]
+
+    @property
+    def view_projection_matrix(self):
+        return self.projection @ self.view
+
+    def reshape(self, width, height):
+        gl.glViewport(0, 0, width, height)
+
+    def set_zoom(self, fov_y):
+        fov_y = max(0.0, fov_y)
+
+        self.projection = np.array(
+            [[fov_y / self.aspect_ratio, 0, 0, 0],
+             [0, fov_y, 0, 0],
+             [0, 0, (self.far + self.near) / (self.near - self.far),
+              (2 * self.near * self.far) / (self.near - self.far)],
+             [0, 0, -1, 0]],
+            dtype=np.float32
+        )
+
+    def mouse(self, button, direction, x, y):
+        if button == glut.GLUT_MIDDLE_BUTTON:
+            is_scroll_wheel_down = direction == glut.GLUT_DOWN
+
+            if self.is_scroll_wheel_down and not is_scroll_wheel_down:
+                self.prev_mouse_x = None
+                self.prev_mouse_y = None
+
+            self.is_scroll_wheel_down = is_scroll_wheel_down
+        elif self.is_debug_mode:
+            print(f"mouse(button={button}, direction={direction}, x={x}, y={y})")
+
+    def mouse_wheel(self, wheel, direction, x, y):
+        if direction > 0:
+            self.fov_y += 10
+            self.set_zoom(self.fov_y)
+        elif direction < 0:
+            self.fov_y -= 10
+            self.set_zoom(self.fov_y)
+        elif self.is_debug_mode:
+            print(f"mouse_wheel(wheel={wheel}, direction={direction}, x={x}, y={y})")
+
+    def mouse_movement(self, x, y):
+        if self.prev_mouse_x is not None and self.prev_mouse_y is not None:
+            dx = -(self.prev_mouse_x - x)
+            dy = (self.prev_mouse_y - y)
+
+            t = get_translation_matrix(dx / self.window_width, dy / self.window_height)
+            self.view = self.view @ t
+
+        self.prev_mouse_x = x
+        self.prev_mouse_y = y
+
+        if self.is_debug_mode:
+            print(f"mouse_movement(x={x}, y={y})")
+
+    def keyboard(self, key, x, y):
+        is_shift_pressed = glut.glutGetModifiers() == glut.GLUT_ACTIVE_SHIFT
+
+        if is_shift_pressed and key == KeyByteCodes.PLUS:
+            self.fov_y += 10
+            self.set_zoom(self.fov_y)
+        elif is_shift_pressed and key == KeyByteCodes.UNDERSCORE:
+            self.fov_y -= 10
+            self.set_zoom(self.fov_y)
+        elif key == KeyByteCodes.ZERO:
+            self.fov_y = self.original_fov_y
+            self.set_zoom(self.fov_y)
+        elif self.is_debug_mode:
+            print(f"keyboard(x={x}, y={y})")
 
 
 class ShaderProgram:
@@ -53,30 +255,23 @@ class ShaderProgram:
 
         self.program = gl.glCreateProgram()
 
-        vertex = gl.glCreateShader(gl.GL_VERTEX_SHADER)
-        fragment = gl.glCreateShader(gl.GL_FRAGMENT_SHADER)
-
-        # Set shaders source
-        gl.glShaderSource(vertex, vertex_code)
-        gl.glShaderSource(fragment, fragment_code)
-
         # Compile shaders
-        gl.glCompileShader(vertex)
-        if not gl.glGetShaderiv(vertex, gl.GL_COMPILE_STATUS):
-            error = gl.glGetShaderInfoLog(vertex).decode()
-            print(error)
-            raise RuntimeError("Shader compilation error")
+        def compile_and_attach(shader_type, shader_source):
+            shader = gl.glCreateShader(shader_type)
+            gl.glShaderSource(shader, shader_source)
 
-        gl.glCompileShader(fragment)
-        gl.glCompileShader(fragment)
-        if not gl.glGetShaderiv(fragment, gl.GL_COMPILE_STATUS):
-            error = gl.glGetShaderInfoLog(fragment).decode()
-            print(error)
-            raise RuntimeError("Shader compilation error")
+            gl.glCompileShader(shader)
+            if not gl.glGetShaderiv(shader, gl.GL_COMPILE_STATUS):
+                error = gl.glGetShaderInfoLog(shader).decode()
+                print(error)
+                raise RuntimeError("Shader compilation error")
 
-        # Attach shader objects to the program
-        gl.glAttachShader(self.program, vertex)
-        gl.glAttachShader(self.program, fragment)
+            gl.glAttachShader(self.program, shader)
+
+            return shader
+
+        vertex = compile_and_attach(gl.GL_VERTEX_SHADER, vertex_code)
+        fragment = compile_and_attach(gl.GL_FRAGMENT_SHADER, fragment_code)
 
         # Build program
         gl.glLinkProgram(self.program)
@@ -116,7 +311,9 @@ class QuadRenderer:
                  default_shader_program: ShaderProgram,
                  debug_shader_program: Optional[ShaderProgram] = None,
                  displacement_factor=1.0,
-                 window_name='Hello world!', window_size=(512, 512), fps=60,
+                 window_name='Hello world!',
+                 camera=Camera((512, 512)),
+                 fps=60,
                  mesh_density=0):
         """
         :param colour_image: The colour image (texture) to render on the quad.
@@ -131,18 +328,19 @@ class QuadRenderer:
         glut.glutInit()
         glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGBA)
         glut.glutCreateWindow(window_name)
-        glut.glutReshapeWindow(*window_size)
+        glut.glutReshapeWindow(*camera.window_size)
         glut.glutReshapeFunc(self.reshape)
         glut.glutIdleFunc(self.idle)
         glut.glutDisplayFunc(self.display)
         glut.glutKeyboardFunc(self.keyboard)
         glut.glutMouseFunc(self.mouse)
         glut.glutMouseWheelFunc(self.mouse_wheel)
+        glut.glutMotionFunc(self.mouse_movement)
 
-        self.log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
-        self.log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
-        self.log(f"GL_VENDOR: {str(gl.glGetString(gl.GL_VENDOR), 'utf-8')}")
-        self.log(f"GLUT_API_VERSION: {glut.GLUT_API_VERSION}")
+        log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
+        log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
+        log(f"GL_VENDOR: {str(gl.glGetString(gl.GL_VENDOR), 'utf-8')}")
+        log(f"GLUT_API_VERSION: {glut.GLUT_API_VERSION}")
 
         gl.glEnable(gl.GL_CULL_FACE)
         # TODO: Get program working with depth test.
@@ -224,21 +422,14 @@ class QuadRenderer:
         self.colour_texture_id = self.load_texture(colour_image)
         self.depth_texture_id = self.load_texture(depth_map)
 
-        self.view: np.ndarray = np.eye(4, dtype=np.float32)
         self.model: np.ndarray = np.eye(4, dtype=np.float32)
-        self.projection: np.ndarray = np.eye(4, dtype=np.float32)
 
         self.last_frame_time: datetime.datetime = datetime.datetime.now()
         self.fps: float = fps
         self.update: Optional[Callable[[float], None]] = None
-
-        # TODO: Get these values as params.
-        self.fov_y = 60
-        self.original_fov_y = 60
-        self.aspect_ratio = 512 / 512
-        self.near = 0.01
-        self.far = 1000.0
         self.paused = False
+
+        self.camera = camera
 
     @staticmethod
     def generate_vertices_and_texture_coordinates(density=0, depth_map=None):
@@ -321,7 +512,7 @@ class QuadRenderer:
         gl.glBindVertexArray(self.vao)
         self.shader.bind()
 
-        mvp = self.projection @ self.view @ self.model
+        mvp = self.camera.view_projection_matrix @ self.model
         gl.glUniformMatrix4fv(self.shader.get_uniform_location(self.mvp_uniform), 1, gl.GL_TRUE, mvp)
 
         gl.glActiveTexture(gl.GL_TEXTURE0)
@@ -364,147 +555,25 @@ class QuadRenderer:
     def reshape(self, width, height):
         gl.glViewport(0, 0, width, height)
 
-    def set_zoom(self, fov_y):
-        fov_y = max(0.0, fov_y)
-
-        self.projection = np.array(
-            [[fov_y / self.aspect_ratio, 0, 0, 0],
-             [0, fov_y, 0, 0],
-             [0, 0, (self.far + self.near) / (self.near - self.far),
-              (2 * self.near * self.far) / (self.near - self.far)],
-             [0, 0, -1, 0]],
-            dtype=np.float32
-        )
-
     def mouse(self, button, dir, x, y):
-        print(button, dir, x, y)
+        self.camera.mouse(button, dir, x, y)
 
     def mouse_wheel(self, wheel, direction, x, y):
-        if direction > 0:
-            self.fov_y += 10
-            self.set_zoom(self.fov_y)
-        elif direction < 0:
-            self.fov_y -= 10
-            self.set_zoom(self.fov_y)
-        else:
-            print(wheel, direction, x, y)
+        self.camera.mouse_wheel(wheel, direction, x, y)
+
+    def mouse_movement(self, x, y):
+        self.camera.mouse_movement(x, y)
 
     def keyboard(self, key, x, y):
-        is_shift_pressed = glut.glutGetModifiers() == glut.GLUT_ACTIVE_SHIFT
-
-        # TODO: Zoom with scroll wheel.
-        # TODO: Pan with middle mouse click.
         if key == KeyByteCodes.ESCAPE:
             sys.exit()
         # TODO: Print key mappings to console on program launch.
-        elif key == KeyByteCodes.ONE:
-            self.shader.unbind()
-            self.shader = self.default_shader
-        elif key == KeyByteCodes.TWO:
-            self.shader.unbind()
-            self.shader = self.debug_shader
-        elif is_shift_pressed and key == KeyByteCodes.PLUS:
-            self.fov_y += 10
-            self.set_zoom(self.fov_y)
-            pass
-        elif is_shift_pressed and key == KeyByteCodes.UNDERSCORE:
-            self.fov_y -= 10
-            self.set_zoom(self.fov_y)
-            pass
-        elif key == KeyByteCodes.ZERO:
-            self.fov_y = self.original_fov_y
-            self.set_zoom(self.fov_y)
-            pass
         elif key == KeyByteCodes.SPACE:
             self.paused = not self.paused
         else:
             print(key)
 
-    @staticmethod
-    def log(message):
-        """
-        Print a message to stdout with a timestamp.
-        :param message: The message to print.
-        """
-        print(f"[{datetime.datetime.now()}] {message}")
-
-    @staticmethod
-    def get_rotation_matrix(angle, axis=Axis.X, dtype=np.float32, degrees=False):
-        """
-        Get the 4x4 rotation matrix for the given angle and rotation axis.
-
-        :param angle: The angle to rotate by.
-        :param axis: The axis to rotate about.
-        :param dtype: The data type of the rotation matrix.
-        :param degrees: Whether the angle is in degrees (=True) or radians (=False).
-        :return: The rotation matrix.
-        """
-        rotation_matrix = np.eye(4, dtype=dtype)
-
-        if degrees:
-            angle = np.deg2rad(angle)
-
-        if axis == Axis.X:
-            rotation_matrix[1, 1] = np.cos(angle)
-            rotation_matrix[1, 2] = -np.sin(angle)
-            rotation_matrix[2, 1] = np.sin(angle)
-            rotation_matrix[2, 2] = np.cos(angle)
-        elif axis == Axis.Y:
-            rotation_matrix[0, 0] = np.cos(angle)
-            rotation_matrix[0, 2] = np.sin(angle)
-            rotation_matrix[2, 0] = -np.sin(angle)
-            rotation_matrix[2, 2] = np.cos(angle)
-        elif axis == Axis.Z:
-            rotation_matrix[0, 0] = np.cos(angle)
-            rotation_matrix[0, 1] = -np.sin(angle)
-            rotation_matrix[1, 0] = np.sin(angle)
-            rotation_matrix[1, 1] = np.cos(angle)
-        else:
-            raise RuntimeError(f"Invalid value for argument 'axis'; Expected type {Axis}, got {type(axis)}.")
-
-        return rotation_matrix
-
-    @staticmethod
-    def get_translation_matrix(dx: float = 0, dy: float = 0, dz: float = 0, dtype=np.float32):
-        """
-        Get the 4x4 translation matrix for the given displacement values across the x, y and z axes.
-
-        :param dx: The translation on the x axis.
-        :param dy: The translation on the y axis.
-        :param dz: The translation on the z axis.
-        :param dtype: The data type of the translation matrix.
-        :return: The 4x4 translation matrix.
-        """
-        translation_matrix = np.eye(4, dtype=dtype)
-
-        translation_matrix[0, 3] = dx
-        translation_matrix[1, 3] = dy
-        translation_matrix[2, 3] = dz
-
-        return translation_matrix
-
-    @staticmethod
-    def get_scale_matrix(sx: float = 1, sy: Optional[float] = None, sz: Optional[float] = None, dtype=np.float32):
-        """
-        Get the 4x4 scale matrix for the given scales for the x, y and z axes.
-
-        :param sx: The scale of the x axis. If either `sy` or `sz` are set to `None`, then this value will be used for all axes.
-        :param sy: The scale of the y axis.
-        :param sz: The scale of the z axis.
-        :param dtype: The data type of the scale matrix.
-        :return: The 4x4 scale matrix.
-        """
-        scale_matrix = np.eye(4, dtype=dtype)
-
-        if sy is None or sz is None:
-            sy = sx
-            sz = sx
-
-        scale_matrix[0, 0] = sx
-        scale_matrix[1, 1] = sy
-        scale_matrix[2, 2] = sz
-
-        return scale_matrix
+        self.camera.keyboard(key, x, y)
 
 
 def load_image(fp):
@@ -608,29 +677,7 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     colour = load_image(image_path)
     depth = load_depth(depth_path, depth_scaling_factor)
 
-    class PerspectiveMatrix:
-        def __init__(self, fov_y, aspect_ration, near, far):
-            self.fov_y = fov_y
-            self.aspect_ratio = aspect_ration
-            self.near = near
-            self.far = far
-
-            self.matrix = np.array(
-                [[fov_y / aspect_ratio, 0, 0, 0],
-                 [0, fov_y, 0, 0],
-                 [0, 0, (far + near) / (near - far), (2 * near * far) / (near - far)],
-                 [0, 0, -1, 0]],
-                dtype=np.float32
-            )
-
-        def __copy__(self):
-            return PerspectiveMatrix(self.fov_y, self.aspect_ratio, self.near, self.far)
-
-    # TODO: Set window width/height according to image dimensions.
-    fov_y = 60
-    aspect_ratio = window_width / window_height
-    near = 0.01
-    far = 1000.0
+    camera = Camera(window_size=tuple(colour.shape[:2]), fov_y=60)
 
     # TODO: Make shader source paths configurable.
     default_shader = ShaderProgram(vertex_shader_path='shader.vert', fragment_shader_path='shader.frag')
@@ -639,23 +686,17 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     renderer = QuadRenderer(colour, depth,
                             default_shader_program=default_shader, debug_shader_program=debug_shader,
                             displacement_factor=displacement_factor,
-                            fps=fps, window_size=(window_width, window_height), mesh_density=mesh_density)
-    renderer.model = QuadRenderer.get_scale_matrix(1.0) @ renderer.model
-    QuadRenderer.log(f"Model: \n{renderer.model}")
+                            fps=fps, camera=camera, mesh_density=mesh_density)
 
-    renderer.view = QuadRenderer.get_rotation_matrix(angle=30, axis=Axis.X, degrees=True) @ renderer.view
-    QuadRenderer.log(f"View: \n{renderer.view}")
-    renderer.view = QuadRenderer.get_translation_matrix(dz=-70) @ renderer.view
-    QuadRenderer.log(f"View: \n{renderer.view}")
+    renderer.model = get_scale_matrix(1.0) @ renderer.model
+    log(f"Model: \n{renderer.model}")
 
-    renderer.projection = np.array(
-        [[fov_y / aspect_ratio, 0, 0, 0],
-         [0, fov_y, 0, 0],
-         [0, 0, (far + near) / (near - far), (2 * near * far) / (near - far)],
-         [0, 0, -1, 0]],
-        dtype=np.float32
-    )
-    QuadRenderer.log(f"Projection: \n{renderer.projection}")
+    camera.view = get_rotation_matrix(angle=30, axis=Axis.X, degrees=True) @ camera.view
+    log(f"View: \n{camera.view}")
+    camera.view = get_translation_matrix(dz=-70) @ camera.view
+    log(f"View: \n{camera.view}")
+
+    log(f"Projection: \n{camera.projection}")
 
     class Task:
         def __init__(self, task):
@@ -702,7 +743,7 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     os.makedirs(output_path, exist_ok=True)
 
     def update_func(delta):
-        t = QuadRenderer.get_rotation_matrix(6 * delta, axis=Axis.Y, degrees=True)
+        t = get_rotation_matrix(6 * delta, axis=Axis.Y, degrees=True)
 
         renderer.model = t @ renderer.model
 
