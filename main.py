@@ -15,8 +15,12 @@ from PIL import Image, ImageOps
 
 class KeyByteCodes:
     ESCAPE = b'\x1b'
+    ZERO = b'0'
     ONE = b'1'
     TWO = b'2'
+    PLUS = b'+'
+    MINUS = b'-'
+    UNDERSCORE = b'_'
 
 
 class Axis(enum.Enum):
@@ -218,6 +222,13 @@ class QuadRenderer:
         self.fps: float = fps
         self.update: Optional[Callable[[float], None]] = None
 
+        # TODO: Get these values as params.
+        self.fov_y = 60
+        self.original_fov_y = 60
+        self.aspect_ratio = 512 / 512
+        self.near = 0.0
+        self.far = 1000.0
+
     @staticmethod
     def generate_vertices_and_texture_coordinates(density=0):
         # TODO: Adapt grid dimensions to image/depth dimensions.
@@ -342,8 +353,22 @@ class QuadRenderer:
     def reshape(self, width, height):
         gl.glViewport(0, 0, width, height)
 
+    def set_zoom(self, fov_y):
+        fov_y = max(0.0, fov_y)
+
+        self.projection = np.array(
+            [[fov_y / self.aspect_ratio, 0, 0, 0],
+             [0, fov_y, 0, 0],
+             [0, 0, (self.far + self.near) / (self.near - self.far), (2 * self.near * self.far) / (self.near - self.far)],
+             [0, 0, -1, 0]],
+            dtype=np.float32
+        )
+
     def keyboard(self, key, x, y):
-        # TODO: Add ability to zoom in.
+        is_shift_pressed = glut.glutGetModifiers() == glut.GLUT_ACTIVE_SHIFT
+
+        # TODO: Zoom with scroll wheel.
+        # TODO: Pan with middle mouse click.
         if key == KeyByteCodes.ESCAPE:
             sys.exit()
         # TODO: Print key mappings to console on program launch.
@@ -353,6 +378,20 @@ class QuadRenderer:
         elif key == KeyByteCodes.TWO:
             self.shader.unbind()
             self.shader = self.debug_shader
+        elif is_shift_pressed and key == KeyByteCodes.PLUS:
+            self.fov_y += 10
+            self.set_zoom(self.fov_y)
+            pass
+        elif is_shift_pressed and key == KeyByteCodes.UNDERSCORE:
+            self.fov_y -= 10
+            self.set_zoom(self.fov_y)
+            pass
+        elif key == KeyByteCodes.ZERO:
+            self.fov_y = self.original_fov_y
+            self.set_zoom(self.fov_y)
+            pass
+        else:
+            print(key)
 
     @staticmethod
     def log(message):
@@ -541,6 +580,24 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     """
     colour = load_image(image_path)
     depth = load_depth(depth_path, depth_scaling_factor)
+
+    class PerspectiveMatrix:
+        def __init__(self, fov_y, aspect_ration, near, far):
+            self.fov_y = fov_y
+            self.aspect_ratio = aspect_ration
+            self.near = near
+            self.far = far
+
+            self.matrix = np.array(
+                [[fov_y / aspect_ratio, 0, 0, 0],
+                 [0, fov_y, 0, 0],
+                 [0, 0, (far + near) / (near - far), (2 * near * far) / (near - far)],
+                 [0, 0, -1, 0]],
+                dtype=np.float32
+            )
+
+        def __copy__(self):
+            return PerspectiveMatrix(self.fov_y, self.aspect_ratio, self.near, self.far)
 
     # TODO: Set window width/height according to image dimensions.
     fov_y = 60
