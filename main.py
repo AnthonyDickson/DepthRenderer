@@ -23,6 +23,11 @@ class KeyByteCodes:
     UNDERSCORE = b'_'
 
 
+class MouseButton:
+    SCROLL_WHEEL_UP = 3
+    SCROLL_WHEEL_DOWN = 4
+
+
 class Axis(enum.Enum):
     X = enum.auto()
     Y = enum.auto()
@@ -130,6 +135,7 @@ class QuadRenderer:
         glut.glutIdleFunc(self.idle)
         glut.glutDisplayFunc(self.display)
         glut.glutKeyboardFunc(self.keyboard)
+        glut.glutMouseFunc(self.mouse)
 
         self.log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
         self.log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
@@ -197,14 +203,16 @@ class QuadRenderer:
         gl.glBufferData(gl.GL_ARRAY_BUFFER, vertices.nbytes, vertices, gl.GL_STATIC_DRAW)
 
         gl.glEnableVertexAttribArray(self.shader.get_attribute_location(self.position_attribute))
-        gl.glVertexAttribPointer(self.shader.get_attribute_location(self.position_attribute), 3, gl.GL_FLOAT, False, vertices.strides[0], ctypes.c_void_p(0))
+        gl.glVertexAttribPointer(self.shader.get_attribute_location(self.position_attribute), 3, gl.GL_FLOAT, False,
+                                 vertices.strides[0], ctypes.c_void_p(0))
 
         self.uv_buffer = gl.glGenBuffers(1)
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.uv_buffer)
         gl.glBufferData(gl.GL_ARRAY_BUFFER, texture_coords.nbytes, texture_coords, gl.GL_STATIC_DRAW)
 
         gl.glEnableVertexAttribArray(self.shader.get_attribute_location(self.texcoord_attribute))
-        gl.glVertexAttribPointer(self.shader.get_attribute_location(self.texcoord_attribute), 2, gl.GL_FLOAT, False, texture_coords.strides[0],
+        gl.glVertexAttribPointer(self.shader.get_attribute_location(self.texcoord_attribute), 2, gl.GL_FLOAT, False,
+                                 texture_coords.strides[0],
                                  ctypes.c_void_p(0))
 
         self.indices_buffer = gl.glGenBuffers(1)
@@ -359,10 +367,19 @@ class QuadRenderer:
         self.projection = np.array(
             [[fov_y / self.aspect_ratio, 0, 0, 0],
              [0, fov_y, 0, 0],
-             [0, 0, (self.far + self.near) / (self.near - self.far), (2 * self.near * self.far) / (self.near - self.far)],
+             [0, 0, (self.far + self.near) / (self.near - self.far),
+              (2 * self.near * self.far) / (self.near - self.far)],
              [0, 0, -1, 0]],
             dtype=np.float32
         )
+
+    def mouse(self, button, dir, x, y):
+        if button == MouseButton.SCROLL_WHEEL_UP and dir == glut.GLUT_DOWN:
+            self.fov_y += 10
+            self.set_zoom(self.fov_y)
+        elif button == MouseButton.SCROLL_WHEEL_DOWN and dir == glut.GLUT_DOWN:
+            self.fov_y -= 10
+            self.set_zoom(self.fov_y)
 
     def keyboard(self, key, x, y):
         is_shift_pressed = glut.glutGetModifiers() == glut.GLUT_ACTIVE_SHIFT
