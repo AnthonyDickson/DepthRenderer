@@ -21,6 +21,7 @@ class KeyByteCodes:
     PLUS = b'+'
     MINUS = b'-'
     UNDERSCORE = b'_'
+    SPACE = b' '
 
 
 class MouseButton:
@@ -144,7 +145,7 @@ class QuadRenderer:
 
         gl.glEnable(gl.GL_CULL_FACE)
         # TODO: Get program working with depth test.
-        # gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glEnable(gl.GL_DEPTH_TEST)
 
         # Build & activate program
         # --------------------------------------
@@ -234,8 +235,9 @@ class QuadRenderer:
         self.fov_y = 60
         self.original_fov_y = 60
         self.aspect_ratio = 512 / 512
-        self.near = 0.0
+        self.near = 0.01
         self.far = 1000.0
+        self.paused = False
 
     @staticmethod
     def generate_vertices_and_texture_coordinates(density=0):
@@ -407,6 +409,8 @@ class QuadRenderer:
             self.fov_y = self.original_fov_y
             self.set_zoom(self.fov_y)
             pass
+        elif key == KeyByteCodes.SPACE:
+            self.paused = not self.paused
         else:
             print(key)
 
@@ -619,7 +623,7 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png", depth_scaling_fact
     # TODO: Set window width/height according to image dimensions.
     fov_y = 60
     aspect_ratio = window_width / window_height
-    near = 0.0
+    near = 0.01
     far = 1000.0
 
     # TODO: Make shader source paths configurable.
