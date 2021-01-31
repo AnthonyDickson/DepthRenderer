@@ -137,6 +137,7 @@ class QuadRenderer:
         glut.glutDisplayFunc(self.display)
         glut.glutKeyboardFunc(self.keyboard)
         glut.glutMouseFunc(self.mouse)
+        glut.glutMouseWheelFunc(self.mouse_wheel)
 
         self.log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
         self.log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
@@ -191,7 +192,7 @@ class QuadRenderer:
         gl.glBindVertexArray(self.vao)
 
         vertices, vertex_indices, texture_coords, num_triangles = \
-            QuadRenderer.generate_vertices_and_texture_coordinates(mesh_density)
+            QuadRenderer.generate_vertices_and_texture_coordinates(mesh_density, depth_map)
         self.num_vertices = len(vertices)
         self.num_indices = vertex_indices.size
         self.num_indices_per_strip = vertex_indices.shape[0]
@@ -240,7 +241,7 @@ class QuadRenderer:
         self.paused = False
 
     @staticmethod
-    def generate_vertices_and_texture_coordinates(density=0):
+    def generate_vertices_and_texture_coordinates(density=0, depth_map=None):
         # TODO: Adapt grid dimensions to image/depth dimensions.
         assert density % 1 == 0, f"Density must be a whole number, got {density}."
         assert density >= 0, f"Density must be a non-negative number, got {density}."
@@ -256,7 +257,7 @@ class QuadRenderer:
 
         for row in range(len(y)):
             for col in range(len(x)):
-                vertices.append((x[col], y[row], 0.0))
+                vertices.append((x[col], y[row], depth_map[row, col, 0] / 255.0 if depth_map is not None else 0.0))
                 texture_coordinates.append((x_texture[col], y_texture[row]))
 
         vertex_indices = []
@@ -309,7 +310,7 @@ class QuadRenderer:
         delta = (now - self.last_frame_time).total_seconds()
 
         if delta > 1.0 / self.fps:
-            if self.update:
+            if self.update and not self.paused:
                 self.update(delta)
 
             self.last_frame_time = now
@@ -376,12 +377,17 @@ class QuadRenderer:
         )
 
     def mouse(self, button, dir, x, y):
-        if button == MouseButton.SCROLL_WHEEL_UP and dir == glut.GLUT_DOWN:
+        print(button, dir, x, y)
+
+    def mouse_wheel(self, wheel, direction, x, y):
+        if direction > 0:
             self.fov_y += 10
             self.set_zoom(self.fov_y)
-        elif button == MouseButton.SCROLL_WHEEL_DOWN and dir == glut.GLUT_DOWN:
+        elif direction < 0:
             self.fov_y -= 10
             self.set_zoom(self.fov_y)
+        else:
+            print(wheel, direction, x, y)
 
     def keyboard(self, key, x, y):
         is_shift_pressed = glut.glutGetModifiers() == glut.GLUT_ACTIVE_SHIFT
