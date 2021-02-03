@@ -5,9 +5,9 @@ from typing import Optional, Callable
 
 import numpy as np
 from OpenGL import GL as gl, GLUT as glut
-from PIL import Image, ImageOps
+from OpenGL.GL.ARB import pixel_buffer_object
 
-from utils import get_perspective_matrix, get_translation_matrix, log, interweave_arrays, flatten_arrays
+from .utils import get_perspective_matrix, get_translation_matrix, log, interweave_arrays, flatten_arrays
 
 
 class KeyByteCodes:
@@ -15,6 +15,7 @@ class KeyByteCodes:
     ZERO = b'0'
     ONE = b'1'
     TWO = b'2'
+    THREE = b'3'
     PLUS = b'+'
     MINUS = b'-'
     UNDERSCORE = b'_'
@@ -393,8 +394,11 @@ class QuadRenderer:
         """
         glut.glutInit()
         glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGBA)
-        glut.glutInitWindowSize(glut.glutGet(glut.GLUT_SCREEN_WIDTH),
-                                int(glut.glutGet(glut.GLUT_SCREEN_WIDTH) // camera.aspect_ratio))
+
+        self.initial_window_width = int(0.5 * glut.glutGet(glut.GLUT_SCREEN_WIDTH))
+        self.initial_window_height = int(0.5 * glut.glutGet(glut.GLUT_SCREEN_WIDTH) // camera.aspect_ratio)
+        glut.glutInitWindowSize(self.initial_window_width, self.initial_window_height)
+
         glut.glutCreateWindow(window_name)
         glut.glutReshapeFunc(self.reshape)
         # glut.glutIdleFunc(self.idle)
@@ -413,7 +417,24 @@ class QuadRenderer:
         gl.glEnable(gl.GL_CULL_FACE)
         gl.glCullFace(gl.GL_BACK)
         gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glPixelStorei(gl.GL_PACK_ALIGNMENT, 1)
+
+        if pixel_buffer_object.glInitPixelBufferObjectARB():
+            print(f"Pixel buffer object supported.")
+        else:
+            # TODO: If pixel buffer object is not supported, run with slower, synchronous glReadPixels
+            raise RuntimeError(f"Pixel buffer object not supported.")
+
+        gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 4)
+        self.num_channels = 4
+        self.data_size = self.initial_window_width * self.initial_window_height * self.num_channels
+
+        self.pbo_ids = gl.glGenBuffers(2)
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[0])
+        gl.glBufferData(gl.GL_PIXEL_PACK_BUFFER, self.data_size, None, gl.GL_STREAM_READ)
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[1])
+        gl.glBufferData(gl.GL_PIXEL_PACK_BUFFER, self.data_size, None, gl.GL_STREAM_READ)
+
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
 
         self.default_shader = default_shader_program
         self.debug_shader = debug_shader_program
@@ -457,10 +478,21 @@ class QuadRenderer:
         self.start_time = datetime.datetime.now()
         self.update: Optional[Callable[[float], None]] = None
         self.paused = False
+        self.wireframe_mode = False
+        self.pbo_index = 0
+        self.frame_buffer = None
 
         self.camera = camera
         self.width = camera.window_width
         self.height = camera.window_height
+
+    @property
+    def buffer_shape(self):
+        return self.initial_window_width, self.initial_window_height
+
+    @property
+    def num_pbo_buffers(self):
+        return len(self.pbo_ids)
 
     def run(self):
         """
@@ -475,6 +507,10 @@ class QuadRenderer:
         now = datetime.datetime.now()
         delta = (now - self.last_update_time).total_seconds()
 
+        if (now - self.last_frame_time).total_seconds() > 1.0:
+            print(f"Frame Time: {1000 * delta:,.2f}ms")
+            self.last_frame_time = now
+
         if self.update and not self.paused:
             self.update(delta)
 
@@ -485,8 +521,30 @@ class QuadRenderer:
 
         self.last_update_time = datetime.datetime.now()
 
-    def display(self):
+    def read_frame(self):
+        self.pbo_index = (self.pbo_index + 1) % self.num_pbo_buffers
+        pbo_index_next = (self.pbo_index + 1) % self.num_pbo_buffers
+
+        gl.glReadBuffer(gl.GL_FRONT)
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[self.pbo_index])
+        gl.glReadPixels(0, 0, self.width, self.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, 0)
+
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[pbo_index_next])
+        src = gl.glMapBuffer(gl.GL_PIXEL_PACK_BUFFER, gl.GL_READ_ONLY)
+
+        if src:
+            self.frame_buffer = (gl.GLfloat * self.data_size).from_address(src)
+
+            gl.glUnmapBuffer(gl.GL_PIXEL_PACK_BUFFER)
+
+        gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
+
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
+
+        gl.glDrawBuffer(gl.GL_BACK)
+
+    def display(self):
+        self.read_frame()
 
         self.shader.bind()
 
@@ -503,19 +561,8 @@ class QuadRenderer:
 
         glut.glutSwapBuffers()
 
-    def get_frame(self):
-        # TODO: This is slow. Add in PBO (http://www.songho.ca/opengl/gl_pbo.html) and if that's not enough move the
-        #  image conversion (this is also slow) and video writing to another process so the GPU isn't stalled waiting
-        #  for the CPU.
-        data = gl.glReadPixels(0, 0, self.width, self.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE)
-        image = Image.frombytes("RGBA", (self.width, self.height), data)
-        image = image.convert('RGB')
-        image = ImageOps.flip(image)  # in my case image is flipped top-bottom for some reason
-
-        return image
-
     def cleanup(self):
-        pass
+        gl.glDeleteBuffers(len(self.pbo_ids), self.pbo_ids)
 
     def reshape(self, width, height):
         self.width = int(min(glut.glutGet(glut.GLUT_SCREEN_WIDTH), self.camera.aspect_ratio * height))
@@ -547,5 +594,12 @@ class QuadRenderer:
             self.default_shader.unbind()
             self.debug_shader.bind()
             self.shader = self.debug_shader
+        elif key == KeyByteCodes.THREE:
+            self.wireframe_mode = not self.wireframe_mode
+
+            if self.wireframe_mode:
+                gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_FILL)
+            else:
+                gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
         else:
             self.camera.keyboard(key, x, y)

@@ -1,6 +1,6 @@
 import numpy as np
 
-from utils import get_rotation_matrix, get_translation_matrix, Axis
+from .utils import get_rotation_matrix, get_translation_matrix, Axis
 
 
 class Animation:

@@ -1,9 +1,11 @@
 import datetime
 import enum
+import multiprocessing
 from typing import Optional
 
+import cv2
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 
 
 def log(message):
@@ -170,3 +172,133 @@ def interweave_arrays(arrays):
         combined_array[i::len(arrays)] = array
 
     return combined_array
+
+
+class Task:
+    def __init__(self, task):
+        self.task = task
+        self.call_count = 0
+
+    def __call__(self, *args, **kwargs):
+        return self.task(*args, **kwargs)
+
+
+class DelayedTask(Task):
+    def __init__(self, task, delay=0):
+        super().__init__(task)
+
+        self.delay = delay
+
+    def __call__(self, *args, **kwargs):
+        self.call_count += 1
+
+        if self.call_count > self.delay:
+            return super().__call__(*args, **kwargs)
+
+
+class OneTimeTask(Task):
+    def __init__(self, task):
+        super().__init__(task)
+
+        self.is_done = False
+        self.call_count = 0
+
+    def __call__(self, *args, **kwargs):
+        self.call_count += 1
+
+        if not self.is_done:
+            self.is_done = True
+            return super().__call__(*args, **kwargs)
+
+
+class RecurringTask(Task):
+    def __init__(self, task, frequency=1):
+        super().__init__(task)
+        self.frequency = frequency
+
+    def __call__(self, *args, **kwargs):
+        self.call_count += 1
+
+        if self.call_count % self.frequency == 0:
+            return super().__call__(*args, **kwargs)
+
+
+def read_frame_buffer(frame_buffer, width, height, mode='RGBA'):
+    return Image.frombuffer(mode, size=(width, height), data=frame_buffer)
+
+
+def process_frame_numpy(frame_from_buffer):
+    return np.flip(np.asarray(frame_from_buffer), axis=0)
+
+
+def process_frame_pillow(frame_from_buffer):
+    return ImageOps.flip(frame_from_buffer)
+
+
+class AsyncImageWriter:
+    def __init__(self, size, num_workers=4):
+        self.pool = multiprocessing.Pool(processes=num_workers)
+
+        self.size = size
+        self.width, self.height = size
+
+    def join(self):
+        self.pool.join()
+        self.pool.close()
+
+    def write(self, frame_buffer, path, file_format='PNG'):
+        self.pool.apply_async(self._worker, (frame_buffer, self.size, path, file_format))
+
+    @staticmethod
+    def _worker(frame_buffer, size, path, file_format):
+        width, height = size
+        image = process_frame_pillow(read_frame_buffer(frame_buffer, width, height))
+
+        image.save(path, file_format)
+
+
+class VideoWriter:
+    def __init__(self, path, size, fourcc=cv2.VideoWriter_fourcc(*'DIVX'), fps=24):
+        self.path = path
+        self.size = size
+        self.fourcc = fourcc
+        self.fps = fps
+        self.writer = cv2.VideoWriter(self.path, self.fourcc, self.fps, self.size)
+
+    def write(self, frame_buffer):
+        if frame_buffer is not None:
+            frame = process_frame_numpy(read_frame_buffer(frame_buffer, *self.size))
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+            self.writer.write(frame)
+
+    def release(self):
+        if self.writer:
+            self.writer.release()
+
+
+class AsyncVideoWriter(VideoWriter):
+    def __init__(self, path, size, fourcc=cv2.VideoWriter.fourcc(*'DIVX'), fps=24, num_workers=4):
+        super().__init__(path, size, fourcc, fps)
+
+        # Have to use a thread pool instead of process pool since VideoWriter objects cannot be pickled.
+        self.pool = multiprocessing.pool.ThreadPool(processes=num_workers)
+
+    def release(self):
+        self.pool.join()
+        self.pool.close()
+
+        super().release()
+
+    def write(self, frame_buffer):
+        self.pool.apply_async(self._worker, (self.writer, frame_buffer, self.size))
+
+    @staticmethod
+    def _worker(writer, frame_buffer, size):
+        if frame_buffer is not None:
+            width, height = size
+
+            frame = process_frame_numpy(read_frame_buffer(frame_buffer, width, height))
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+            writer.write(frame)
