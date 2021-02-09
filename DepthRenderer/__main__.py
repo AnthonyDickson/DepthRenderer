@@ -4,11 +4,20 @@ from pathlib import Path
 import cv2
 import numpy as np
 import plac
+from PIL import Image
 
-from .animation import RotateXYBounce
-from .render import Camera, ShaderProgram, QuadRenderer, Texture, Mesh
+from .animation import RotateXYBounce, Compose, Translate, RotateAxisBounce
+from .render import Camera, ShaderProgram, MeshRenderer, Texture, Mesh
 from .utils import log, get_translation_matrix, get_scale_matrix, \
-    load_image, load_depth, DelayedTask, RecurringTask, AsyncImageWriter, AsyncVideoWriter
+    load_depth, DelayedTask, RecurringTask, AsyncImageWriter, AsyncVideoWriter, OneTimeTask, Axis, load_colour
+
+
+def resize(image, size):
+    height, width = size[:2]
+    resized_image = Image.fromarray(image)
+    resized_image = resized_image.resize((width, height), Image.ANTIALIAS)
+
+    return np.asarray(resized_image)
 
 
 @plac.annotations(
@@ -38,7 +47,7 @@ from .utils import log, get_translation_matrix, get_scale_matrix, \
         type=Path
     )
 )
-def main(image_path="brick_wall.jpg", depth_path="depth.png",
+def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.png",
          fps=60, mesh_density=8, output_path='frames'):
     """
     Render a colour/depth image pair on a grid mesh in OpenGL using the depth map to displace vertices on the mesh.
@@ -50,13 +59,15 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png",
         number of vertices.
     :param output_path: The path to save any output frames to.
     """
-    colour = load_image(image_path)
+    colour = load_colour(image_path)
     depth = load_depth(depth_path)
+    depth = resize(depth, colour.shape)
 
     texture = Texture(colour)
     mesh = Mesh.from_depth_map(texture, density=mesh_density, depth_map=depth)
 
-    camera = Camera(window_size=tuple(reversed(colour.shape[:2])), fov_y=60)
+    camera_position = get_translation_matrix(dz=-100)
+    camera = Camera(window_size=tuple(reversed(colour.shape[:2])), fov_y=180)
 
     # TODO: Make shader source paths configurable.
     default_shader = ShaderProgram(vertex_shader_path='DepthRenderer/shaders/shader.vert',
@@ -64,7 +75,7 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png",
     debug_shader = ShaderProgram(vertex_shader_path='DepthRenderer/shaders/debug_shader.vert',
                                  fragment_shader_path='DepthRenderer/shaders/debug_shader.frag')
 
-    renderer = QuadRenderer(mesh,
+    renderer = MeshRenderer(mesh,
                             default_shader_program=default_shader,
                             debug_shader_program=debug_shader,
                             fps=fps, camera=camera)
@@ -72,57 +83,56 @@ def main(image_path="brick_wall.jpg", depth_path="depth.png",
     mesh.transform = get_scale_matrix(1.0) @ mesh.transform
     log(f"Model: \n{mesh.transform}")
 
-    camera.view = get_translation_matrix(dz=-70) @ camera.view
+    camera.view = camera_position @ camera.view
     log(f"View: \n{camera.view}")
 
     log(f"Projection: \n{camera.projection}")
 
     os.makedirs(output_path, exist_ok=True)
 
-    writer = AsyncImageWriter(renderer.buffer_shape)
+    animation_speed = 0.15
 
-    # render_image = DelayedTask(OneTimeTask(writer.write), delay=1)
-    # render_frames = RecurringTask(writer.write)
+    anim = RotateXYBounce(np.deg2rad(2.5), offset=0.5, speed=-animation_speed)
 
-    # anim = RotateAxisBounce(np.deg2rad(10), axis=Axis.X)
-    # anim = Translate()
-    anim = RotateXYBounce(np.deg2rad(5))
+    writer = AsyncImageWriter(renderer.frame_buffer_shape,
+                              num_workers=1)
 
-    # anim = Compose([
-    #     RotateAxisBounce(angle=np.deg2rad(15), speed=-1.0),
-    #     Translate(distance=0.5),
-    # ])
+    render_one_frame = DelayedTask(OneTimeTask(writer.write), delay=10)
 
     video_writer = AsyncVideoWriter(os.path.join(output_path, f"{Path(image_path).name}.avi"),
-                                    size=renderer.buffer_shape,
+                                    size=renderer.frame_buffer_shape,
                                     fourcc=cv2.VideoWriter_fourcc(*'DIVX'),
-                                    fps=fps)
+                                    fps=fps,
+                                    num_workers=1)
 
     # Need to delay writing by one frame to ensure the window size is settled (#TODO: Find out why it's changing one after init)
-    write_frame = RecurringTask(video_writer.write)
+    initial_delay = 3
 
-    def update_func(delta):
+    write_frame = DelayedTask(RecurringTask(video_writer.write), delay=initial_delay)
+
+    def update_callback(delta):
         anim.update(delta)
 
-        mesh.transform = anim.transform
+        camera.view = camera_position @ anim.transform
 
         # TODO: Fix `[mpeg4 @ 000001a3c8fa7dc0] Invalid pts (1) <= last (1)` warnings/errors.
+        # TODO: Fix intermittent SIGSEV and other errors.
+        render_one_frame(renderer.frame_buffer, os.path.join(output_path, 'sample_frame.png'))
         write_frame(renderer.frame_buffer)
-        # render_image(frame, os.path.join(output_path, 'sample_frame.png'))
-        # render_frames(frame, os.path.join(output_path, f"frame_{render_frames.call_count:03d}.png"))
 
-    renderer.update = update_func
-
-    try:
-        renderer.run()
-    finally:
-        video_writer.release()
-        writer.join()
+    def on_exit_callback():
+        video_writer.cleanup()
+        writer.cleanup()
         texture.cleanup()
         mesh.cleanup()
         default_shader.cleanup()
         debug_shader.cleanup()
         renderer.cleanup()
+
+    renderer.on_update = update_callback
+    renderer.on_exit = on_exit_callback
+
+    renderer.run()
 
 
 if __name__ == '__main__':

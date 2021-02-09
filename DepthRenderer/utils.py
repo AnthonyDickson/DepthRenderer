@@ -1,6 +1,7 @@
 import datetime
 import enum
 import multiprocessing
+from multiprocessing.pool import ThreadPool, RUN
 from typing import Optional
 
 import cv2
@@ -36,6 +37,9 @@ def get_perspective_matrix(fov_y, aspect_ratio, near=0.01, far=1000.0):
 
 
 class Axis(enum.Enum):
+    """
+    Enumeration of the axes in a 3-dimensional coordinate system (x, y, z).
+    """
     X = enum.auto()
     Y = enum.auto()
     Z = enum.auto()
@@ -120,16 +124,45 @@ def get_scale_matrix(sx: float = 1, sy: Optional[float] = None, sz: Optional[flo
 
 
 def load_image(fp):
+    """
+    Load an image from disk.
+
+    The image is flipped vertically to ensure it is displayed the right way up in OpenGL.
+
+    :param fp: The path to the image file or file object.
+    :return: The loaded image.
+    """
     img = Image.open(fp)
     img_data = np.asarray(img)
 
-    if img.mode == 'RGBA':
-        img_data = np.delete(img_data, -1, -1)  # Drop the alpha channel (the last in the channels dimension)
-
     # Images need to flipped vertically to be displayed the right way up.
-    img = np.flip(img_data, axis=0)
+    img_data = np.flip(img_data, axis=0)
 
-    return img
+    return img_data
+
+
+def load_colour(fp, should_mask=False, mask_white=True):
+    """
+    Load a colour image.
+
+    :param fp: The path to the image file or file object.
+    :param should_mask: Whether certain regions of the image should be masked based on their colour.
+    :param mask_white: Whether white pixels (mask_white=True) or black pixels (mask_white=False) should be masked.
+    :return: The loaded image in RGBA format.
+    """
+    colour_image = load_image(fp)
+
+    H, W, C = colour_image.shape
+
+    if C == 3:
+        colour_image = np.concatenate((colour_image, colour_image.max() * np.ones(shape=(H, W, 1), dtype=colour_image.dtype)), axis=2)
+
+    if should_mask:
+        mask_colour = [255, 255, 255] if mask_white else [0, 0, 0]
+        should_mask = np.all(colour_image[:, :, :3] == mask_colour, axis=2)
+        colour_image[should_mask, 3] = 0
+
+    return colour_image
 
 
 def load_depth(fp):
@@ -153,6 +186,12 @@ def load_depth(fp):
 
 
 def flatten_arrays(arrays):
+    """
+    Flatten multiple multidimensional arrays.
+
+    :param arrays: The arrays to flatten.
+    :return: A tuple of the flattened arrays.
+    """
     return tuple(map(np.ravel, arrays))
 
 
@@ -175,6 +214,18 @@ def interweave_arrays(arrays):
 
 
 class Task:
+    """
+    Encapsulates a callable object.
+
+    >>> def say_hello():
+    >>>     print("Hello, world!")
+    >>>
+    >>> task = Task(say_hello)
+    >>> task()
+    Hello, world!
+    >>> task()
+    Hello, world!
+    """
     def __init__(self, task):
         self.task = task
         self.call_count = 0
@@ -184,7 +235,23 @@ class Task:
 
 
 class DelayedTask(Task):
+    """
+    Encapsulates a task that executes after a given delay.
+
+    >>> def say_hello():
+    >>>     print("Hello, world!")
+    >>>
+    >>> task = DelayedTask(say_hello, delay=1)
+    >>> task()
+    >>> task()
+    Hello, world!
+    """
+
     def __init__(self, task, delay=0):
+        """
+        :param task: The task to execute.
+        :param delay: The number of calls to this object before `task` is executed.
+        """
         super().__init__(task)
 
         self.delay = delay
@@ -197,6 +264,18 @@ class DelayedTask(Task):
 
 
 class OneTimeTask(Task):
+    """
+    Encapsulates a task that should be done one time only.
+
+    >>> def say_hello():
+    >>>     print("Hello, world!")
+    >>>
+    >>> task = OneTimeTask(say_hello)
+    >>> task()
+    Hello, world!
+    >>> task()
+    """
+
     def __init__(self, task):
         super().__init__(task)
 
@@ -212,53 +291,159 @@ class OneTimeTask(Task):
 
 
 class RecurringTask(Task):
+    """
+    Encapsulates a repeatable task.
+
+
+    >>> def say_hello():
+    >>>     print("Hello, world!")
+    >>>
+    >>> task = RecurringTask(say_hello, frequency=2)
+    >>> task()
+    Hello, world!
+    >>> task()
+    >>> task()
+    Hello, world!
+    >>> task()
+    """
+
     def __init__(self, task, frequency=1):
+        """
+        :param task: The task to execute.
+        :param frequency: How often the task should be executed where 1 = everytime, 2 =  every second call,
+            3 = every third call etc...
+        """
         super().__init__(task)
+
+        assert frequency > 0, f"Frequency must be a positive integer, got {frequency}."
+
         self.frequency = frequency
 
     def __call__(self, *args, **kwargs):
-        self.call_count += 1
-
         if self.call_count % self.frequency == 0:
             return super().__call__(*args, **kwargs)
 
+        self.call_count += 1
 
-def read_frame_buffer(frame_buffer, width, height, mode='RGBA'):
-    return Image.frombuffer(mode, size=(width, height), data=frame_buffer)
+
+def read_frame_buffer(frame_buffer, size, mode='RGBA'):
+    """
+    Read a frame buffer as a PIL.Image object.
+
+    :param frame_buffer: The frame buffer to read.
+    :param size: The width and height of the frame.
+    :param mode: The mode (e.g. RGB, RGBA) of the frame buffer.
+
+    :return: A PIL.Image object.
+    """
+    return Image.frombuffer(mode, size, data=frame_buffer)
 
 
 def process_frame_numpy(frame_from_buffer):
+    """
+    Process a PIL.Image formatted frame buffer as a numpy array.
+
+    :param frame_from_buffer: The frame loaded with `read_frame_buffer(...)`.
+
+    :return: The frame as a numpy array.
+    """
     return np.flip(np.asarray(frame_from_buffer), axis=0)
 
 
 def process_frame_pillow(frame_from_buffer):
+    """
+    Process a PIL.Image formatted frame buffer.
+
+    :param frame_from_buffer: The frame loaded with `read_frame_buffer(...)`.
+
+    :return: The frame as a PIL.Image object.
+    """
     return ImageOps.flip(frame_from_buffer)
 
 
-class AsyncImageWriter:
-    def __init__(self, size, num_workers=4):
-        self.pool = multiprocessing.Pool(processes=num_workers)
+class ImageWriter:
+    """
+    Handles writing a given frame buffer to disk.
+    """
 
+    def __init__(self, size):
+        """
+        :param size: The width and height and the images to be written.
+        """
         self.size = size
         self.width, self.height = size
 
-    def join(self):
-        self.pool.join()
-        self.pool.close()
-
     def write(self, frame_buffer, path, file_format='PNG'):
-        self.pool.apply_async(self._worker, (frame_buffer, self.size, path, file_format))
+        """
+        Write a frame buffer to file.
 
-    @staticmethod
-    def _worker(frame_buffer, size, path, file_format):
-        width, height = size
-        image = process_frame_pillow(read_frame_buffer(frame_buffer, width, height))
+        :param frame_buffer: The frame buffer copied from the GPU.
+        :param path: The path to save the image.
+        :param file_format: The format to save the image in.
+        """
+        image = process_frame_pillow(read_frame_buffer(frame_buffer, self.size))
 
         image.save(path, file_format)
 
 
+class AsyncImageWriter(ImageWriter):
+    """
+    Handles writing a given frame buffer to disk asynchronously on a separate thread.
+    """
+
+    def __init__(self, size, num_workers=4):
+        """
+        :param size: The width and height and the images to be written.
+        :param num_workers: The number of threads to use.
+        """
+        super().__init__(size)
+
+        self.pool = ThreadPool(processes=num_workers)
+
+    def write(self, frame_buffer, path, file_format='PNG'):
+        """
+        Write a frame buffer to file.
+
+        :param frame_buffer: The frame buffer copied from the GPU.
+        :param path: The path to save the image.
+        :param file_format: The format to save the image in.
+        """
+        self.pool.apply_async(self._worker, (frame_buffer, self.size, path, file_format))
+
+    @staticmethod
+    def _worker(frame_buffer, size, path, file_format):
+        """
+        Worker function used to write a frame buffer to file.
+
+        :param frame_buffer: The frame buffer copied from the GPU.
+        :param size: The width and height of the frame.
+        :param path: The path to save the image.
+        :param file_format: The format to save the image in.
+        """
+        image = process_frame_pillow(read_frame_buffer(frame_buffer, size))
+
+        image.save(path, file_format)
+
+    def cleanup(self):
+        """
+        Finish writing any queued frames and release any used resources.
+        """
+        self.pool.close()
+        self.pool.join()
+
+
 class VideoWriter:
+    """
+    Handles writing a series of frame buffers to a video file.
+    """
+
     def __init__(self, path, size, fourcc=cv2.VideoWriter_fourcc(*'DIVX'), fps=24):
+        """
+        :param path: The path to save the video to.
+        :param size: The width and height of frames to be written.
+        :param fourcc: The four character code of the video format to use.
+        :param fps: The frame rate to encode the video at.
+        """
         self.path = path
         self.size = size
         self.fourcc = fourcc
@@ -266,39 +451,71 @@ class VideoWriter:
         self.writer = cv2.VideoWriter(self.path, self.fourcc, self.fps, self.size)
 
     def write(self, frame_buffer):
+        """
+        Add a frame to the video.
+
+        :param frame_buffer: The frame buffer to add to the video.
+        """
         if frame_buffer is not None:
-            frame = process_frame_numpy(read_frame_buffer(frame_buffer, *self.size))
+            frame = process_frame_numpy(read_frame_buffer(frame_buffer, self.size))
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
             self.writer.write(frame)
 
-    def release(self):
+    def cleanup(self):
+        """
+        Finish writing the video and free any used resources.
+        """
         if self.writer:
             self.writer.release()
 
 
 class AsyncVideoWriter(VideoWriter):
+    """
+    Handles writing a series of frame buffers to a video file asynchronously on a separate thread.
+    """
+
     def __init__(self, path, size, fourcc=cv2.VideoWriter.fourcc(*'DIVX'), fps=24, num_workers=4):
+        """
+        :param path: The path to save the video to.
+        :param size: The width and height of frames to be written.
+        :param fourcc: The four character code of the video format to use.
+        :param fps: The frame rate to encode the video at.
+        :param num_workers: The number of threads to use.
+        """
         super().__init__(path, size, fourcc, fps)
 
         # Have to use a thread pool instead of process pool since VideoWriter objects cannot be pickled.
-        self.pool = multiprocessing.pool.ThreadPool(processes=num_workers)
-
-    def release(self):
-        self.pool.join()
-        self.pool.close()
-
-        super().release()
+        self.pool = ThreadPool(processes=num_workers)
 
     def write(self, frame_buffer):
+        """
+        Add a frame to the video.
+
+        :param frame_buffer: The frame buffer to add to the video.
+        """
         self.pool.apply_async(self._worker, (self.writer, frame_buffer, self.size))
 
     @staticmethod
     def _worker(writer, frame_buffer, size):
-        if frame_buffer is not None:
-            width, height = size
+        """
+        Worker function used to write a frame buffer to a video.
 
-            frame = process_frame_numpy(read_frame_buffer(frame_buffer, width, height))
+        :param writer: The OpenCV VideoWriter object to use for writing the video.
+        :param frame_buffer: The frame buffer copied from the GPU.
+        :param size: The width and height of the frame.
+        """
+        if frame_buffer is not None:
+            frame = process_frame_numpy(read_frame_buffer(frame_buffer,size))
             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
 
             writer.write(frame)
+
+    def cleanup(self):
+        """
+        Finish writing the video and free any used resources.
+        """
+        self.pool.close()
+        self.pool.join()
+
+        super().cleanup()

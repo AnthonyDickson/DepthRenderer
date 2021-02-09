@@ -1,5 +1,6 @@
 import ctypes
 import datetime
+import enum
 import sys
 from typing import Optional, Callable
 
@@ -11,6 +12,10 @@ from .utils import get_perspective_matrix, get_translation_matrix, log, interwea
 
 
 class KeyByteCodes:
+    """
+    Byte codes for specific keys on the keyboard as given by GLUT.
+    """
+
     ESCAPE = b'\x1b'
     ZERO = b'0'
     ONE = b'1'
@@ -22,8 +27,28 @@ class KeyByteCodes:
     SPACE = b' '
 
 
+class MouseWheel(enum.Enum):
+    """
+    Enumeration of the codes for scroll wheel events.
+    """
+    SCROLL_UP = 3
+    SCROLL_DOWN = 4
+
+
 class Camera:
-    def __init__(self, window_size, fov_y=60, near=0.01, far=1000.0, is_debug_mode=False):
+    """
+    A camera used for viewing a 3D scene.
+    """
+
+    def __init__(self, window_size, fov_y=60, near=0.01, far=1000.0, is_debug_mode=False, zoom_speed=10):
+        """
+        :param window_size: The size of the window the camera is for.
+        :param fov_y: The vertical field of view in degrees.
+        :param near: The distance of the near plane from the camera.
+        :param far: The distance of the far plane from the camera.
+        :param is_debug_mode: Whether to print debug info.
+        :param zoom_speed: The speed to zoom in/out at (the degrees to change the vertical field of view at).
+        """
         # TODO: Update window size on window resize.
         self.window_size = window_size
 
@@ -35,6 +60,7 @@ class Camera:
         self.view = np.eye(4, dtype=np.float32)
         self.projection = get_perspective_matrix(self.fov_y, self.aspect_ratio, near=near, far=far)
 
+        self.zoom_speed = zoom_speed
         self.prev_mouse_x = None
         self.prev_mouse_y = None
         self.is_scroll_wheel_down = False
@@ -43,24 +69,38 @@ class Camera:
 
     @property
     def aspect_ratio(self):
+        """
+        The ratio between the width and height of the window.
+        """
         return self.window_width / self.window_height
 
     @property
     def window_width(self):
+        """
+        The width of the window in pixels.
+        """
         return self.window_size[0]
 
     @property
     def window_height(self):
+        """
+        The height of the window in pixels.
+        """
         return self.window_size[1]
 
     @property
     def view_projection_matrix(self):
+        """
+        The view-projection matrix (part of the model-view-projection matrix) for the camera.
+        """
         return self.projection @ self.view
 
-    def reshape(self, width, height):
-        gl.glViewport(0, 0, width, height)
+    def _set_zoom(self, fov_y):
+        """
+        Helper function for setting the zoom based on a vertical field of view.
 
-    def set_zoom(self, fov_y):
+        :param fov_y: The vertical field of view in degrees.
+        """
         fov_y = max(0.0, fov_y)
 
         self.projection = np.array(
@@ -72,6 +112,35 @@ class Camera:
             dtype=np.float32
         )
 
+    def zoom_in(self):
+        """
+        Zoom the camera in.
+        """
+        if self.fov_y < self.zoom_speed:
+            self.fov_y *= 1.1
+        else:
+            self.fov_y += self.zoom_speed
+
+        self._set_zoom(self.fov_y)
+
+    def zoom_out(self):
+        """
+        Zoom the camera out.
+        """
+        if self.fov_y <= self.zoom_speed:
+            self.fov_y *= 0.9
+        else:
+            self.fov_y -= self.zoom_speed
+
+        self._set_zoom(self.fov_y)
+
+    def reset_zoom(self):
+        """
+        Reset the zoom to its original value.
+        """
+        self.fov_y = self.original_fov_y
+        self._set_zoom(self.fov_y)
+
     def mouse(self, button, direction, x, y):
         if button == glut.GLUT_MIDDLE_BUTTON:
             is_scroll_wheel_down = direction == glut.GLUT_DOWN
@@ -81,16 +150,18 @@ class Camera:
                 self.prev_mouse_y = None
 
             self.is_scroll_wheel_down = is_scroll_wheel_down
+        elif button == MouseWheel.SCROLL_UP.value and direction == 1:
+            self.zoom_in()
+        elif button == MouseWheel.SCROLL_DOWN.value and direction == 1:
+            self.zoom_out()
         elif self.is_debug_mode:
             print(f"mouse(button={button}, direction={direction}, x={x}, y={y})")
 
     def mouse_wheel(self, wheel, direction, x, y):
         if direction > 0:
-            self.fov_y += 10
-            self.set_zoom(self.fov_y)
+            self.zoom_in()
         elif direction < 0:
-            self.fov_y -= 10
-            self.set_zoom(self.fov_y)
+            self.zoom_out()
         elif self.is_debug_mode:
             print(f"mouse_wheel(wheel={wheel}, direction={direction}, x={x}, y={y})")
 
@@ -113,20 +184,25 @@ class Camera:
         is_shift_pressed = glut.glutGetModifiers() == glut.GLUT_ACTIVE_SHIFT
 
         if is_shift_pressed and key == KeyByteCodes.PLUS:
-            self.fov_y += 10
-            self.set_zoom(self.fov_y)
+            self.zoom_in()
         elif is_shift_pressed and key == KeyByteCodes.UNDERSCORE:
-            self.fov_y -= 10
-            self.set_zoom(self.fov_y)
+            self.zoom_out()
         elif key == KeyByteCodes.ZERO:
-            self.fov_y = self.original_fov_y
-            self.set_zoom(self.fov_y)
+            self.reset_zoom()
         elif self.is_debug_mode:
             print(f"keyboard(x={x}, y={y})")
 
 
 class ShaderProgram:
+    """
+    A OpenGL shader program.
+    """
+
     def __init__(self, vertex_shader_path, fragment_shader_path):
+        """
+        :param vertex_shader_path: The path to the vertex shader source code.
+        :param fragment_shader_path: The path to the fragment shader source code.
+        """
         self.program = 0
         self.uniforms = dict()
         self.attributes = dict()
@@ -135,6 +211,9 @@ class ShaderProgram:
         self.fragment_shader_path = fragment_shader_path
 
     def compile_and_link(self):
+        """
+        Compile and link the shader program.
+        """
         with open(self.vertex_shader_path, 'r') as f:
             vertex_code = f.read()
 
@@ -172,6 +251,11 @@ class ShaderProgram:
         gl.glDetachShader(self.program, fragment)
 
     def generate_uniform_location(self, uniform_name):
+        """
+        Register a uniform.
+
+        :param uniform_name: The name of the uniform to register as it appears in the source code.
+        """
         location = gl.glGetUniformLocation(self.program, uniform_name)
 
         if location == -1:
@@ -180,6 +264,11 @@ class ShaderProgram:
         self.uniforms[uniform_name] = location
 
     def generate_attribute_location(self, attribute_name):
+        """
+        Register an attribute.
+
+        :param attribute_name: The name of the attribute to register as it appears in the source code.
+        """
         location = gl.glGetAttribLocation(self.program, attribute_name)
 
         if location == -1:
@@ -188,9 +277,21 @@ class ShaderProgram:
         self.attributes[attribute_name] = location
 
     def get_uniform_location(self, uniform_name):
+        """
+        Get the location of a uniform variable.
+
+        :param uniform_name: The name of the uniform to get as it appears in the source code.
+        :return: The location of the uniform or -1 if it is not registered.
+        """
         return self.uniforms.get(uniform_name, -1)
 
     def get_attribute_location(self, attribute_name):
+        """
+        Get the location of an attribute variable.
+
+        :param attribute_name: The name of the uniform to get as it appears in the source code.
+        :return: The location of the attribute or -1 if it is not registered.
+        """
         return self.attributes.get(attribute_name, -1)
 
     def bind(self):
@@ -205,23 +306,48 @@ class ShaderProgram:
 
 
 class OpenGLInterface(object):
-    def to_gpu(self):
+    """
+    A general interface for drawable OpenGL objects with deferred loading via `to_gpu(...)`.
+    """
+
+    def to_gpu(self, *args, **kwargs):
+        """
+        Load data to GPU and do any OpenGL-context-dependent setup.
+        """
         pass
 
     def bind(self):
+        """
+        Do any necessary binding of buffers etc.
+        """
         pass
 
     def draw(self):
+        """
+        Draw geometry.
+
+        Should be called after `bind()` and before `unbind()`.
+        """
         pass
 
     def unbind(self):
+        """
+        Undo any of the bind operations performed in `bind()`.
+        """
         pass
 
     def cleanup(self):
+        """
+        Free any allocated resources/memory.
+        """
         pass
 
 
 class Texture(OpenGLInterface):
+    """
+    RGBA texture.
+    """
+
     def __init__(self, image):
         assert isinstance(image, np.ndarray) and len(image.shape) == 3, \
             f"Image should be a image stored in a numpy array with exactly three dimensions (height, width and colour " \
@@ -245,7 +371,7 @@ class Texture(OpenGLInterface):
         gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_WRAP_T, gl.GL_CLAMP)
         gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR)
         gl.glTexParameterf(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR)
-        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGB, width, height, 0, gl.GL_RGB, gl.GL_UNSIGNED_BYTE, self.image)
+        gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, gl.GL_RGBA, width, height, 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, self.image)
 
     def bind(self):
         gl.glActiveTexture(gl.GL_TEXTURE0)
@@ -253,11 +379,21 @@ class Texture(OpenGLInterface):
         gl.glUniform1i(self.texture_sampler_id, 0)
 
     def cleanup(self):
-        gl.glDeleteTextures(1, self.texture_id)
+        gl.glDeleteTextures(1, [self.texture_id])
 
 
 class Mesh(OpenGLInterface):
+    """
+    A textured triangle mesh.
+    """
+
     def __init__(self, texture: Texture, vertices, texture_coordinates, indices):
+        """
+        :param texture: The mesh's texture.
+        :param vertices: The vertices of the mesh.
+        :param texture_coordinates: The UV coordinates mapping the texture to the mesh.
+        :param indices: The indices for the triangles of the mesh.
+        """
         self.texture = texture
         self.vertices = vertices
         self.texture_coordinates = texture_coordinates
@@ -274,6 +410,12 @@ class Mesh(OpenGLInterface):
         self.texture_coordinate_attribute_location = -1
 
     def to_gpu(self, position_attribute_location, texture_coordinate_attribute_location):
+        """
+        Upload the vertex data and setup buffers.
+
+        :param position_attribute_location: The location of the 'position' attribute in the shader program.
+        :param texture_coordinate_attribute_location: The location of the 'texture_coordinate' attribute in the shader program.
+        """
         self.position_attribute_location = position_attribute_location
         self.texture_coordinate_attribute_location = texture_coordinate_attribute_location
 
@@ -322,13 +464,26 @@ class Mesh(OpenGLInterface):
         gl.glBindVertexArray(0)
 
     def cleanup(self):
-        gl.glDeleteBuffers(1, self.vertex_buffer_id)
-        gl.glDeleteBuffers(1, self.uv_buffer_id)
-        gl.glDeleteBuffers(1, self.indices_buffer_id)
-        gl.glDeleteVertexArrays(1, self.vao_id)
+        gl.glDeleteBuffers(1, [self.vertex_buffer_id])
+        gl.glDeleteBuffers(1, [self.uv_buffer_id])
+        gl.glDeleteBuffers(1, [self.indices_buffer_id])
+        gl.glDeleteVertexArrays(1, [self.vao_id])
 
     @staticmethod
     def from_depth_map(texture, depth_map, density=0):
+        """
+        Create a mesh from a depth map.
+
+        The initial mesh is a quad on the XY plane where each side is subdivided 2^density times.
+        Each vertex has its z-coordinate set to a [0.0, 1.0] normalised depth value from the closest corresponding pixel
+        in the depth map.
+
+        :param texture: The colour texture for the mesh.
+        :param depth_map: The depth map to create the mesh from.
+        :param density: How fine the generated mesh should be. Increasing this value by one roughly quadruples the
+            number of vertices.
+        :return: The resulting mesh.
+        """
         assert density % 1 == 0, f"Density must be a whole number, got {density}."
         assert density >= 0, f"Density must be a non-negative number, got {density}."
 
@@ -338,7 +493,7 @@ class Mesh(OpenGLInterface):
                np.linspace(1, -1, 2 ** density + 1, dtype=np.float32)
 
         # Make the grid the same aspect ratio as the input depth map.
-        y = (height / width) * y + (1 - (height / width)) * y
+        y = (height / width) * y - 0.5 * (1.0 - height/width) * y
 
         x_texture, y_texture = np.linspace(0, 1, 2 ** density + 1, dtype=np.float32), \
                                np.linspace(1, 0, 2 ** density + 1, dtype=np.float32)
@@ -378,20 +533,32 @@ class Mesh(OpenGLInterface):
         return Mesh(texture, vertices, texture_coordinates, indices)
 
 
-class QuadRenderer:
+class MeshRenderer:
+    """
+    Program for rendering a single mesh.
+    """
+
     def __init__(self, mesh,
                  default_shader_program: ShaderProgram,
                  debug_shader_program: Optional[ShaderProgram] = None,
                  window_name='Hello world!',
+                 can_reshape_window=False,
                  camera=Camera((512, 512)),
                  fps=60):
         """
-        :param colour_image: The colour image (texture) to render on the quad.
-        :param depth_map: The depth map to use for displacing the rendered mesh.
+        :param mesh: The mesh to be rendered.
+        :param default_shader_program: The main shader program to be used.
+        :param debug_shader_program: (optional) The shader used for debugging.
         :param window_name: The name of the window to use for rendering.
-        :param window_size: The width and height of the window to use for rendering.
+        :param can_reshape_window: Whether the window should be allowed to resized.
+        :param camera: The camera used for viewing the mesh.
         :param fps: The target frames per second to draw at.
         """
+        self.camera = camera
+        self.width = camera.window_width
+        self.height = camera.window_height
+        self.can_reshape_window = can_reshape_window
+
         glut.glutInit()
         glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGBA)
 
@@ -402,7 +569,6 @@ class QuadRenderer:
         glut.glutCreateWindow(window_name)
         glut.glutReshapeFunc(self.reshape)
         # glut.glutIdleFunc(self.idle)
-        glut.glutTimerFunc(int(1000 / fps), self.idle, 0)
         glut.glutDisplayFunc(self.display)
         glut.glutKeyboardFunc(self.keyboard)
         glut.glutMouseFunc(self.mouse)
@@ -417,6 +583,8 @@ class QuadRenderer:
         gl.glEnable(gl.GL_CULL_FACE)
         gl.glCullFace(gl.GL_BACK)
         gl.glEnable(gl.GL_DEPTH_TEST)
+        gl.glEnable(gl.GL_ALPHA_TEST)
+        gl.glAlphaFunc(gl.GL_NOTEQUAL, 0.0)
 
         if pixel_buffer_object.glInitPixelBufferObjectARB():
             print(f"Pixel buffer object supported.")
@@ -476,23 +644,21 @@ class QuadRenderer:
         self.fps: float = fps
         self.target_frame_time_ms = int(1000.0 // fps)
         self.start_time = datetime.datetime.now()
-        self.update: Optional[Callable[[float], None]] = None
+        self.on_update: Optional[Callable[[float], None]] = None
+        self.on_exit: Optional[Callable[[], None]] = None
         self.paused = False
         self.wireframe_mode = False
         self.pbo_index = 0
         self.frame_buffer = None
 
-        self.camera = camera
-        self.width = camera.window_width
-        self.height = camera.window_height
+        self.is_running = True
 
     @property
-    def buffer_shape(self):
+    def frame_buffer_shape(self):
+        """
+        The shape (width, height) of the frame buffer.
+        """
         return self.initial_window_width, self.initial_window_height
-
-    @property
-    def num_pbo_buffers(self):
-        return len(self.pbo_ids)
 
     def run(self):
         """
@@ -500,9 +666,13 @@ class QuadRenderer:
 
         Blocks until execution is finished.
         """
+        glut.glutTimerFunc(1, self.idle, 0)
         glut.glutMainLoop()
 
     def idle(self, _):
+        if not self.is_running:
+            return
+
         glut.glutPostRedisplay()
         now = datetime.datetime.now()
         delta = (now - self.last_update_time).total_seconds()
@@ -511,8 +681,8 @@ class QuadRenderer:
             print(f"Frame Time: {1000 * delta:,.2f}ms")
             self.last_frame_time = now
 
-        if self.update and not self.paused:
-            self.update(delta)
+        if self.on_update and not self.paused:
+            self.on_update(delta)
 
         time_to_wait_ms = int(self.target_frame_time_ms + (self.target_frame_time_ms - 1000 * delta))
         time_to_wait_ms = min(self.target_frame_time_ms, max(time_to_wait_ms, 0))
@@ -522,10 +692,15 @@ class QuadRenderer:
         self.last_update_time = datetime.datetime.now()
 
     def read_frame(self):
-        self.pbo_index = (self.pbo_index + 1) % self.num_pbo_buffers
-        pbo_index_next = (self.pbo_index + 1) % self.num_pbo_buffers
+        """
+        Read the frame buffer pixel data to a CPU buffer.
+        """
+        # Alternate through multiple PBOs so that while we read from one buffer, data can be written into another buffer
+        # at the same time.
+        num_pbo_buffers = len(self.pbo_ids)
+        self.pbo_index = (self.pbo_index + 1) % num_pbo_buffers
+        pbo_index_next = (self.pbo_index + 1) % num_pbo_buffers
 
-        gl.glReadBuffer(gl.GL_FRONT)
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[self.pbo_index])
         gl.glReadPixels(0, 0, self.width, self.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, 0)
 
@@ -541,10 +716,13 @@ class QuadRenderer:
 
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
-        gl.glDrawBuffer(gl.GL_BACK)
-
     def display(self):
+        if not self.is_running:
+            return
+
+        gl.glReadBuffer(gl.GL_FRONT)
         self.read_frame()
+        gl.glDrawBuffer(gl.GL_BACK)
 
         self.shader.bind()
 
@@ -564,12 +742,29 @@ class QuadRenderer:
     def cleanup(self):
         gl.glDeleteBuffers(len(self.pbo_ids), self.pbo_ids)
 
+    def close(self):
+        self.is_running = False
+
+        if self.on_exit:
+            self.on_exit()
+
+        sys.exit(0)
+
     def reshape(self, width, height):
         self.width = int(min(glut.glutGet(glut.GLUT_SCREEN_WIDTH), self.camera.aspect_ratio * height))
         self.height = int(self.width / self.camera.aspect_ratio)
 
         gl.glViewport(0, 0, self.width, self.height)
         glut.glutReshapeWindow(self.width, self.height)
+        # if self.can_reshape_window:
+        #     self.width = int(min(glut.glutGet(glut.GLUT_SCREEN_WIDTH), self.camera.aspect_ratio * height))
+        #     self.height = int(self.width / self.camera.aspect_ratio)
+        #
+        #     gl.glViewport(0, 0, self.width, self.height)
+        #     glut.glutReshapeWindow(self.width, self.height)
+        # else:
+        #     gl.glViewport(0, 0, self.initial_window_width, self.initial_window_height)
+        #     glut.glutReshapeWindow(self.initial_window_width, self.initial_window_height)
 
     def mouse(self, button, dir, x, y):
         self.camera.mouse(button, dir, x, y)
@@ -582,7 +777,7 @@ class QuadRenderer:
 
     def keyboard(self, key, x, y):
         if key == KeyByteCodes.ESCAPE:
-            sys.exit()
+            self.close()
         # TODO: Print key mappings to console on program launch.
         elif key == KeyByteCodes.SPACE:
             self.paused = not self.paused

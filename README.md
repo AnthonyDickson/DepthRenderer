@@ -8,10 +8,10 @@ Otherwise, please ensure you have the packages listed in `environment.yml` insta
 
 **Important:** Please see the notes below for installing the OpenGL packages for your operating system.
 
-# Issues With Installing GLUT
+## Issues With Installing GLUT
 The official Python package for OpenGL available via Pip is missing files needed for GLUT to correctly function.
 
-## Windows
+### Windows
 For Windows, you can install PyOpenGL using the wheel file from here: 
 https://www.lfd.uci.edu/~gohlke/pythonlibs/#pyopengl.
 Download the appropriate version and then point Pip to the downloaded file for installation:
@@ -19,8 +19,18 @@ Download the appropriate version and then point Pip to the downloaded file for i
 pip install <path/to/wheel/file.whl>
 ```
 
-## OpenGL For Python on Linux
+### OpenGL For Python on Linux
 For Linux, you can install the GLUT package available via the `apt` command:
 ```shell
 sudo apt install freeglut3-dev
 ```
+
+## Running
+To run the program you will need a colour image and the corresponding depth map.
+You can then call the main script via command:
+```shell
+python -m DepthRenderer <path/to/colour_image> <path/to/depth_map> -mesh-density 8
+```
+The argument `-mesh-density` controls the resolution of the generated mesh, each increase of 1 increases the number of 
+triangles in the mesh by about 4x.
+Run `python -m DepthRender -h` for more details about the available command line arguments.

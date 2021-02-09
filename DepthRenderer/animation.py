@@ -19,8 +19,8 @@ class Animation:
         return self._transform
 
     @transform.setter
-    def transform(self, value):
-        self._transform = value
+    def transform(self, transform):
+        self._transform = transform
 
 
 class RotateAxisBounce(Animation):
@@ -34,39 +34,41 @@ class RotateAxisBounce(Animation):
     def update(self, delta):
         super().update(delta)
 
-        new_angle = np.sin(self.speed * self.elapsed) * self.angle
+        new_angle = np.sin(self.speed * self.elapsed * 2.0 * np.pi) * self.angle
         self.transform = get_rotation_matrix(new_angle, axis=self.axis)
 
 
 class RotateXYBounce(Animation):
-    def __init__(self, angle=np.pi / 2, speed=1.0):
+    def __init__(self, angle=np.pi / 2, speed=1.0, offset=0):
         super().__init__()
 
         self.angle = angle
         self.speed = speed
+        self.offset = offset
 
     def update(self, delta):
         super().update(delta)
 
-        y_axis_rotation = np.sin(self.speed * self.elapsed) * self.angle
-        x_axis_rotation = np.cos(self.speed * self.elapsed) * self.angle
+        y_axis_rotation = np.sin(self.speed * self.elapsed * 2 * np.pi + self.offset * 2.0 * np.pi) * self.angle
+        x_axis_rotation = np.cos(self.speed * self.elapsed * 2 * np.pi + self.offset * 2.0 * np.pi) * self.angle
 
         self.transform = get_rotation_matrix(y_axis_rotation, axis=Axis.Y) @ get_rotation_matrix(x_axis_rotation,
                                                                                                  axis=Axis.X)
 
 
 class Translate(Animation):
-    def __init__(self, distance=1.0, axis=Axis.X, speed=1.0):
+    def __init__(self, distance=1.0, axis=Axis.X, speed=1.0, offset=0.0):
         super().__init__()
 
         self.distance = distance
         self.speed = speed
         self.axis = axis
+        self.offset = offset
 
     def update(self, delta):
         super().update(delta)
 
-        t = np.sin(self.speed * self.elapsed) * self.distance
+        t = np.sin(self.speed * self.elapsed * 2.0 * np.pi + self.offset * 2.0 * np.pi) * self.distance
 
         dx = 0.0
         dy = 0.0
@@ -86,8 +88,6 @@ class Compose(Animation):
     def __init__(self, animations):
         super().__init__()
 
-        assert len(animations) > 0
-
         self.animations = animations
 
     def update(self, delta):
@@ -106,5 +106,5 @@ class Compose(Animation):
         return transform
 
     @transform.setter
-    def transform(self, value):
+    def transform(self, transform):
         raise RuntimeError(f"{self.__class__.__name__} does not support setter for transform.")
