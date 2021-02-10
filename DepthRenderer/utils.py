@@ -1,7 +1,7 @@
 import datetime
 import enum
-import multiprocessing
-from multiprocessing.pool import ThreadPool, RUN
+import time
+from multiprocessing.pool import ThreadPool
 from typing import Optional
 
 import cv2
@@ -522,10 +522,17 @@ class AsyncVideoWriter(VideoWriter):
 
 class FrameTimer:
     def __init__(self):
-        self.last_frame_time = datetime.datetime.utcnow()
+        self.last_frame_time = time.time()
         self.delta = 0.0
+        self.elapsed = 0.0
+
+    def reset(self):
+        self.last_frame_time = time.time()
+        self.delta = 0.0
+        self.elapsed = 0.0
 
     def update(self):
-        now = datetime.datetime.utcnow()
-        self.delta = (now - self.last_frame_time).total_seconds()
+        now = time.time()
+        self.delta = now - self.last_frame_time
+        self.elapsed += self.delta
         self.last_frame_time = now

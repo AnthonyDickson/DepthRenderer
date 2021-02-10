@@ -318,6 +318,10 @@ def main(image_path, depth_maps_path, fps=60, mesh_density=8, displacement_facto
 
     def write_frame_func():
         frame = renderer.get_frame()
+
+        if frame is None:
+            return
+
         current_context = context_switcher.current_context
 
         if current_context is not None:
@@ -343,55 +347,37 @@ def main(image_path, depth_maps_path, fps=60, mesh_density=8, displacement_facto
 
     next_mesh = RecurringTask(next_mesh_func, frequency=animation_length_in_frames + initial_delay + 1)
 
-    class Flag:
-        def __init__(self):
-            self._is_set = False
-
-        @property
-        def is_set(self):
-            return self._is_set
-
-        @is_set.setter
-        def is_set(self, value):
-            self._is_set = bool(value)
-
-        def set(self):
-            self.is_set = True
-
-        def unset(self):
-            self.is_set = False
-
-        def __bool__(self):
-            return self.is_set
-
-    reached_finished = Flag()
+    processed_all_meshes = False
 
     def update_callback(delta):
+        nonlocal processed_all_meshes
+
         try:
             next_mesh()
         except StopIteration:
-            reached_finished.set()
             renderer.close()
+            processed_all_meshes = True
+            return
 
         camera_animation.update(delta)
         camera.view = camera_position @ camera_animation.transform
         write_frame()
 
-    def on_exit_callback():
+    def exit_callback():
         context_switcher.cleanup()
         default_shader.cleanup()
         debug_shader.cleanup()
         renderer.cleanup()
 
-        if reached_finished:
-            create_mosaic_video(video_sources, os.path.join(output_path, 'mosaic'), image_name, colour.shape[:2])
-            create_concat_video(video_sources, os.path.join(output_path, 'concat'), image_name)
-            create_paired_videos(video_sources, os.path.join(output_path, 'paired'), image_name, model_names)
-
     renderer.on_update = update_callback
-    renderer.on_exit = on_exit_callback
+    renderer.on_exit = exit_callback
 
     renderer.run()
+
+    if processed_all_meshes:
+        create_mosaic_video(video_sources, os.path.join(output_path, 'mosaic'), image_name, colour.shape[:2])
+        create_concat_video(video_sources, os.path.join(output_path, 'concat'), image_name)
+        create_paired_videos(video_sources, os.path.join(output_path, 'paired'), image_name, model_names)
 
 
 if __name__ == '__main__':

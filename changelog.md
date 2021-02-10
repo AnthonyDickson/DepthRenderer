@@ -1,3 +1,6 @@
+# 2021-02-11
+- Migrate window code from GLUT to GLFW.
+
 # 2021-02-10
 - Add a script for automatically creating video datasets for a given image and series of depth maps.
 - Add back in displacement factor command line argument.

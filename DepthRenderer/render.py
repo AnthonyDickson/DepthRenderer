@@ -1,40 +1,13 @@
 import ctypes
-import enum
-import sys
 from typing import Optional, Callable
 
+import glfw
 import numpy as np
-from OpenGL import GL as gl, GLUT as glut
+from OpenGL import GL as gl
 from OpenGL.GL.ARB import pixel_buffer_object
 from PIL import Image
 
 from .utils import get_perspective_matrix, get_translation_matrix, log, interweave_arrays, flatten_arrays, FrameTimer
-
-
-# TODO: Use GLFW instead of GLUT for windowing.
-
-class KeyByteCodes:
-    """
-    Byte codes for specific keys on the keyboard as given by GLUT.
-    """
-
-    ESCAPE = b'\x1b'
-    ZERO = b'0'
-    ONE = b'1'
-    TWO = b'2'
-    THREE = b'3'
-    PLUS = b'+'
-    MINUS = b'-'
-    UNDERSCORE = b'_'
-    SPACE = b' '
-
-
-class MouseWheel(enum.Enum):
-    """
-    Enumeration of the codes for scroll wheel events.
-    """
-    SCROLL_UP = 3
-    SCROLL_DOWN = 4
 
 
 class Camera:
@@ -143,31 +116,28 @@ class Camera:
         self.fov_y = self.original_fov_y
         self._set_zoom(self.fov_y)
 
-    def mouse(self, button, direction, x, y):
-        if button == glut.GLUT_MIDDLE_BUTTON:
-            is_scroll_wheel_down = direction == glut.GLUT_DOWN
+    def mouse(self, window, button, action, mods):
+        # TODO: Drag mouse to rotate view.
+        if button == glfw.MOUSE_BUTTON_MIDDLE:
+            is_scroll_wheel_down = action != glfw.RELEASE
 
             if self.is_scroll_wheel_down and not is_scroll_wheel_down:
                 self.prev_mouse_x = None
                 self.prev_mouse_y = None
 
             self.is_scroll_wheel_down = is_scroll_wheel_down
-        elif button == MouseWheel.SCROLL_UP.value and direction == 1:
+        elif self.is_debug_mode:
+            print(f"mouse(window={window}, button={button}, action={action}, mods={mods})")
+
+    def mouse_wheel(self, window, x_offset, y_offset):
+        if y_offset > 0:
             self.zoom_in()
-        elif button == MouseWheel.SCROLL_DOWN.value and direction == 1:
+        elif y_offset < 0:
             self.zoom_out()
         elif self.is_debug_mode:
-            print(f"mouse(button={button}, direction={direction}, x={x}, y={y})")
+            print(f"mouse_wheel(window={window}, x_offset={x_offset}, y_offset={y_offset})")
 
-    def mouse_wheel(self, wheel, direction, x, y):
-        if direction > 0:
-            self.zoom_in()
-        elif direction < 0:
-            self.zoom_out()
-        elif self.is_debug_mode:
-            print(f"mouse_wheel(wheel={wheel}, direction={direction}, x={x}, y={y})")
-
-    def mouse_movement(self, x, y):
+    def mouse_movement(self, window, x, y):
         if self.prev_mouse_x is not None and self.prev_mouse_y is not None:
             dx = -(self.prev_mouse_x - x)
             dy = (self.prev_mouse_y - y)
@@ -180,19 +150,17 @@ class Camera:
         self.prev_mouse_y = y
 
         if self.is_debug_mode:
-            print(f"mouse_movement(x={x}, y={y})")
+            print(f"mouse_movement(window={window}, x={x}, y={y})")
 
-    def keyboard(self, key, x, y):
-        is_shift_pressed = glut.glutGetModifiers() == glut.GLUT_ACTIVE_SHIFT
-
-        if is_shift_pressed and key == KeyByteCodes.PLUS:
+    def keyboard(self, window, key, scancode, action, mods):
+        if mods == glfw.MOD_SHIFT and key == glfw.KEY_EQUAL and action == glfw.PRESS:
             self.zoom_in()
-        elif is_shift_pressed and key == KeyByteCodes.UNDERSCORE:
+        elif mods == glfw.MOD_SHIFT and key == glfw.KEY_MINUS and action == glfw.PRESS:
             self.zoom_out()
-        elif key == KeyByteCodes.ZERO:
+        elif key == glfw.KEY_0 and action == glfw.PRESS:
             self.reset_zoom()
         elif self.is_debug_mode:
-            print(f"keyboard(x={x}, y={y})")
+            print(f"keyboard(window={window}, key={key}, scancode={scancode}, action={action}, mods={mods})")
 
 
 class ShaderProgram:
@@ -357,8 +325,8 @@ class Texture(OpenGLInterface):
 
         self.image = image
 
-        self.texture_id = -1
-        self.texture_sampler_id = -1
+        self.texture_id = 0
+        self.texture_sampler_id = 0
 
     def to_gpu(self):
         height, width, _ = self.image.shape
@@ -406,13 +374,13 @@ class Mesh(OpenGLInterface):
 
         self.transform = np.eye(4, dtype=np.float32)
 
-        self.vao_id = -1
-        self.vertex_buffer_id = -1
-        self.uv_buffer_id = -1
-        self.indices_buffer_id = -1
+        self.vao_id = 0
+        self.vertex_buffer_id = 0
+        self.uv_buffer_id = 0
+        self.indices_buffer_id = 0
 
-        self.position_attribute_location = -1
-        self.texture_coordinate_attribute_location = -1
+        self.position_attribute_location = 0
+        self.texture_coordinate_attribute_location = 0
 
     def to_gpu(self, position_attribute_location, texture_coordinate_attribute_location):
         """
@@ -544,7 +512,7 @@ class Mesh(OpenGLInterface):
         log(f"Num. vertices: {len(vertices):,d}")
         timer.update()
         log(f"Mesh Generation Took {1000 * timer.delta:.2f} ms "
-              f"({1e9 * timer.delta / len(indices):.2f} ns per triangle)")
+            f"({1e9 * timer.delta / len(indices):.2f} ns per triangle)")
 
         return Mesh(texture, vertices, texture_coordinates, indices)
 
@@ -578,7 +546,6 @@ class MeshRenderer:
                  default_shader_program: ShaderProgram,
                  debug_shader_program: Optional[ShaderProgram] = None,
                  window_name='Hello world!',
-                 can_reshape_window=False,
                  camera=Camera((512, 512)),
                  fps=60,
                  unlimited_frame_works=False):
@@ -586,42 +553,47 @@ class MeshRenderer:
         :param default_shader_program: The main shader program to be used.
         :param debug_shader_program: (optional) The shader used for debugging.
         :param window_name: The name of the window to use for rendering.
-        :param can_reshape_window: Whether the window should be allowed to resized.
         :param camera: The camera used for viewing the mesh.
         :param fps: The target frames per second to draw at.
         :param unlimited_frame_works: Run the main loop as fast as possible, the time delta given to the update callback
              will be fixed to `1.0 / fps`.
         """
         self.camera = camera
-        self.width = camera.window_width
-        self.height = camera.window_height
-        self.can_reshape_window = can_reshape_window
 
-        glut.glutInit()
-        glut.glutInitDisplayMode(glut.GLUT_DOUBLE | glut.GLUT_RGBA)
+        if not glfw.init():
+            raise RuntimeError("Could not initialise GLFW!")
+        else:
+            log("GLFW successfully initialised.")
 
-        self.initial_window_width = int(0.5 * glut.glutGet(glut.GLUT_SCREEN_WIDTH))
-        self.initial_window_height = int(0.5 * glut.glutGet(glut.GLUT_SCREEN_WIDTH) // camera.aspect_ratio)
-        glut.glutInitWindowSize(self.initial_window_width, self.initial_window_height)
+        glfw.window_hint(glfw.RESIZABLE, glfw.FALSE)
+        video_mode = glfw.get_video_mode(glfw.get_primary_monitor())
+        screen_width = video_mode.size.width
 
-        glut.glutCreateWindow(window_name)
-        glut.glutReshapeFunc(self.reshape)
-        glut.glutDisplayFunc(self.draw)
-        glut.glutKeyboardFunc(self.keyboard)
-        glut.glutMouseFunc(self.mouse)
-        glut.glutMouseWheelFunc(self.mouse_wheel)
-        glut.glutMotionFunc(self.mouse_movement)
+        self.window_width = int(0.5 * screen_width)
+        self.window_height = int(0.5 * screen_width // camera.aspect_ratio)
+        self.window = glfw.create_window(width=self.window_width, height=self.window_height,
+                                         title=window_name, monitor=None, share=None)
+
+        if not self.window:
+            raise RuntimeError("Could not create window!")
+        else:
+            log("GLFW window successfully created.")
+
+        glfw.make_context_current(self.window)
+        glfw.set_key_callback(self.window, self.keyboard)
+        glfw.set_mouse_button_callback(self.window, self.mouse)
+        glfw.set_scroll_callback(self.window, self.mouse_wheel)
+        glfw.set_cursor_pos_callback(self.window, self.mouse_movement)
 
         log(f"GL_VERSION: {str(gl.glGetString(gl.GL_VERSION), 'utf-8')}")
         log(f"GL_RENDERER: {str(gl.glGetString(gl.GL_RENDERER), 'utf-8')}")
         log(f"GL_VENDOR: {str(gl.glGetString(gl.GL_VENDOR), 'utf-8')}")
-        log(f"GLUT_API_VERSION: {glut.GLUT_API_VERSION}")
+        log(f"GLFW_API_VERSION: {str(glfw.get_version_string())}")
 
         gl.glEnable(gl.GL_CULL_FACE)
         gl.glCullFace(gl.GL_BACK)
         gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glEnable(gl.GL_ALPHA_TEST)
-        gl.glAlphaFunc(gl.GL_NOTEQUAL, 0.0)
+        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
 
         if pixel_buffer_object.glInitPixelBufferObjectARB():
             log(f"Pixel buffer object supported.")
@@ -631,7 +603,7 @@ class MeshRenderer:
 
         gl.glPixelStorei(gl.GL_UNPACK_ALIGNMENT, 4)
         self.num_channels = 4
-        self.data_size = self.initial_window_width * self.initial_window_height * self.num_channels
+        self.data_size = self.window_width * self.window_height * self.num_channels
 
         self.pbo_ids = gl.glGenBuffers(2)
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[0])
@@ -683,7 +655,7 @@ class MeshRenderer:
         self.unlimited_frame_works = unlimited_frame_works
         self.frame_timer = FrameTimer()
 
-        self.paused = False
+        self.is_paused = False
         self.wireframe_mode = False
         self.is_running = True
 
@@ -706,7 +678,7 @@ class MeshRenderer:
         """
         The shape (width, height) of the frame buffer.
         """
-        return self.initial_window_width, self.initial_window_height
+        return self.window_width, self.window_height
 
     def run(self):
         """
@@ -715,11 +687,30 @@ class MeshRenderer:
         Blocks until execution is finished.
         """
         try:
-            glut.glutTimerFunc(0, self.update, 0)
-            glut.glutMainLoop()
-        except:
+            self.frame_timer.reset()
+
+            while not glfw.window_should_close(self.window):
+                self.frame_timer.update()
+
+                if self.unlimited_frame_works or self.frame_timer.elapsed > self.target_frame_time_secs:
+                    self.draw()
+
+                    if self.on_update is not None and not self.is_paused:
+                        if self.unlimited_frame_works:
+                            delta = self.target_frame_time_secs
+                        else:
+                            delta = self.frame_timer.delta
+
+                        self.on_update(delta)
+
+                    self.frame_timer.elapsed = 0.0
+
+                glfw.poll_events()
+
             if self.on_exit:
                 self.on_exit()
+        finally:
+            glfw.terminate()
 
     def get_frame(self):
         """
@@ -727,25 +718,8 @@ class MeshRenderer:
 
         :return: The currently buffered frame as a PIL.Image object.
         """
-        return Image.frombytes(mode='RGBA', size=self.frame_buffer_shape, data=self.current_pixel_buffer_address)
-
-    def update(self, _):
-        if not self.is_running:
-            return
-
-        self.draw()
-        self.frame_timer.update()
-
-        if self.on_update is not None and not self.paused:
-            self.on_update(self.target_frame_time_secs if self.unlimited_frame_works else self.frame_timer.delta)
-
-        if self.unlimited_frame_works:
-            time_to_wait_ms = 0
-        else:
-            time_to_wait_ms = int(self.target_frame_time_ms + (self.target_frame_time_ms - 1000 * self.frame_timer.delta))
-            time_to_wait_ms = min(self.target_frame_time_ms, max(time_to_wait_ms, 0))
-
-        glut.glutTimerFunc(time_to_wait_ms, self.update, 0)
+        if self.current_pixel_buffer_address:
+            return Image.frombytes(mode='RGBA', size=self.frame_buffer_shape, data=self.current_pixel_buffer_address)
 
     def copy_frame_to_pixel_buffer(self):
         """
@@ -759,7 +733,7 @@ class MeshRenderer:
         pbo_index_next = (self.pbo_index + 1) % num_pbo_buffers
 
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[self.pbo_index])
-        gl.glReadPixels(0, 0, self.width, self.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, 0)
+        gl.glReadPixels(0, 0, self.window_width, self.window_height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, 0)
 
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, self.pbo_ids[pbo_index_next])
         src = gl.glMapBuffer(gl.GL_PIXEL_PACK_BUFFER, gl.GL_READ_ONLY)
@@ -771,8 +745,6 @@ class MeshRenderer:
 
         gl.glBindBuffer(gl.GL_PIXEL_PACK_BUFFER, 0)
 
-        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
-
     def draw(self):
         if not self.is_running:
             return
@@ -780,6 +752,8 @@ class MeshRenderer:
         gl.glReadBuffer(gl.GL_FRONT)
         self.copy_frame_to_pixel_buffer()
         gl.glDrawBuffer(gl.GL_BACK)
+
+        gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
         if self.mesh is not None:
             self.shader.bind()
@@ -794,50 +768,38 @@ class MeshRenderer:
 
         self.shader.unbind()
 
-        glut.glutSwapBuffers()
+        glfw.swap_buffers(self.window)
 
     def cleanup(self):
         gl.glDeleteBuffers(len(self.pbo_ids), self.pbo_ids)
 
     def close(self):
-        self.is_running = False
+        glfw.set_window_should_close(self.window, glfw.TRUE)
 
-        if self.on_exit:
-            self.on_exit()
+    def mouse(self, window, button, action, mods):
+        self.camera.mouse(window, button, action, mods)
 
-        sys.exit(0)
+    def mouse_wheel(self, window, x_offset, y_offset):
+        self.camera.mouse_wheel(window, x_offset, y_offset)
 
-    def reshape(self, _, height):
-        self.width = int(min(glut.glutGet(glut.GLUT_SCREEN_WIDTH), self.camera.aspect_ratio * height))
-        self.height = int(self.width / self.camera.aspect_ratio)
+    def mouse_movement(self, window, x, y):
+        self.camera.mouse_movement(window, x, y)
 
-        gl.glViewport(0, 0, self.width, self.height)
-        glut.glutReshapeWindow(self.width, self.height)
-
-    def mouse(self, button, direction, x, y):
-        self.camera.mouse(button, direction, x, y)
-
-    def mouse_wheel(self, wheel, direction, x, y):
-        self.camera.mouse_wheel(wheel, direction, x, y)
-
-    def mouse_movement(self, x, y):
-        self.camera.mouse_movement(x, y)
-
-    def keyboard(self, key, x, y):
-        if key == KeyByteCodes.ESCAPE:
+    def keyboard(self, window, key, scancode, action, mods):
+        if key == glfw.KEY_ESCAPE and action == glfw.PRESS:
             self.close()
         # TODO: Print key mappings to console on program launch.
-        elif key == KeyByteCodes.SPACE:
-            self.paused = not self.paused
-        elif key == KeyByteCodes.ONE:
+        elif key == glfw.KEY_SPACE and action == glfw.PRESS:
+            self.is_paused = not self.is_paused
+        elif key == glfw.KEY_1 and action == glfw.PRESS:
             self.debug_shader.unbind()
             self.default_shader.bind()
             self.shader = self.default_shader
-        elif key == KeyByteCodes.TWO:
+        elif key == glfw.KEY_2 and action == glfw.PRESS:
             self.default_shader.unbind()
             self.debug_shader.bind()
             self.shader = self.debug_shader
-        elif key == KeyByteCodes.THREE:
+        elif key == glfw.KEY_3 and action == glfw.PRESS:
             self.wireframe_mode = not self.wireframe_mode
 
             if self.wireframe_mode:
@@ -845,4 +807,4 @@ class MeshRenderer:
             else:
                 gl.glPolygonMode(gl.GL_FRONT_AND_BACK, gl.GL_LINE)
         else:
-            self.camera.keyboard(key, x, y)
+            self.camera.keyboard(window, key, scancode, action, mods)

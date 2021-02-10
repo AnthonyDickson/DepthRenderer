@@ -98,7 +98,7 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
 
     os.makedirs(output_path, exist_ok=True)
 
-    animation_speed = 0.15
+    animation_speed = 1
 
     anim = Compose([
         RotateAxisBounce(np.deg2rad(2.5), axis=Axis.Y, offset=0.5, speed=-animation_speed),
@@ -124,13 +124,15 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
 
         # TODO: Fix bug that ignores panning from mouse input. Need to store transforms to the view from mouse inputs
         #  separately instead of in Camera.view so that they are not overridden here.
-        camera.view = camera_position @ anim.transform
+        # camera.view = camera_position @ anim.transform
 
         frame = renderer.get_frame()
-        render_one_frame(frame, os.path.join(output_path, 'sample_frame.png'))
-        write_frame(frame)
 
-    def on_exit_callback():
+        if frame:
+            render_one_frame(frame, os.path.join(output_path, 'sample_frame.png'))
+            write_frame(frame)
+
+    def exit_callback():
         video_writer.cleanup()
         writer.cleanup()
         texture.cleanup()
@@ -140,7 +142,7 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
         renderer.cleanup()
 
     renderer.on_update = update_callback
-    renderer.on_exit = on_exit_callback
+    renderer.on_exit = exit_callback
 
     renderer.run()
 
