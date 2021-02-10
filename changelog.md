@@ -1,5 +1,6 @@
 # 2021-02-11
 - Migrate window code from GLUT to GLFW.
+- Fix bug in paired video filenames.
 
 # 2021-02-10
 - Add a script for automatically creating video datasets for a given image and series of depth maps.

@@ -139,9 +139,7 @@ def create_paired_videos(video_sources, output_path, name, model_names):
     assert len(video_sources) == len(model_names)
 
     for model_name, video_source in zip(model_names, video_sources):
-        input_filename = Path(video_source).stem
-        input_filename = input_filename.replace(f"{model_name}-", "")
-        output_filename = f"ground_truth-{model_name}-{input_filename}.avi"
+        output_filename = f"ground_truth-{model_name}.avi"
         paired_video_path = os.path.join(output_path, output_filename)
         cmd = f"ffmpeg -i {ground_truth_src} -i {video_source} -filter_complex hstack {paired_video_path} -y"
 
