@@ -1,5 +1,4 @@
 import ctypes
-import datetime
 import enum
 import sys
 from typing import Optional, Callable
@@ -7,9 +6,12 @@ from typing import Optional, Callable
 import numpy as np
 from OpenGL import GL as gl, GLUT as glut
 from OpenGL.GL.ARB import pixel_buffer_object
+from PIL import Image
 
-from .utils import get_perspective_matrix, get_translation_matrix, log, interweave_arrays, flatten_arrays
+from .utils import get_perspective_matrix, get_translation_matrix, log, interweave_arrays, flatten_arrays, FrameTimer
 
+
+# TODO: Use GLFW instead of GLUT for windowing.
 
 class KeyByteCodes:
     """
@@ -381,6 +383,9 @@ class Texture(OpenGLInterface):
     def cleanup(self):
         gl.glDeleteTextures(1, [self.texture_id])
 
+    def copy(self):
+        return Texture(self.image.copy())
+
 
 class Mesh(OpenGLInterface):
     """
@@ -464,6 +469,8 @@ class Mesh(OpenGLInterface):
         gl.glBindVertexArray(0)
 
     def cleanup(self):
+        self.unbind()
+
         gl.glDeleteBuffers(1, [self.vertex_buffer_id])
         gl.glDeleteBuffers(1, [self.uv_buffer_id])
         gl.glDeleteBuffers(1, [self.indices_buffer_id])
@@ -487,13 +494,17 @@ class Mesh(OpenGLInterface):
         assert density % 1 == 0, f"Density must be a whole number, got {density}."
         assert density >= 0, f"Density must be a non-negative number, got {density}."
 
+        log("Generating mesh...")
+
+        timer = FrameTimer()
+
         height, width = depth_map.shape[:2]
 
         x, y = np.linspace(-1, 1, 2 ** density + 1, dtype=np.float32), \
                np.linspace(1, -1, 2 ** density + 1, dtype=np.float32)
 
         # Make the grid the same aspect ratio as the input depth map.
-        y = (height / width) * y - 0.5 * (1.0 - height/width) * y
+        y = (height / width) * y - 0.5 * (1.0 - height / width) * y
 
         x_texture, y_texture = np.linspace(0, 1, 2 ** density + 1, dtype=np.float32), \
                                np.linspace(1, 0, 2 ** density + 1, dtype=np.float32)
@@ -528,7 +539,32 @@ class Mesh(OpenGLInterface):
         vertices = np.array(vertices, dtype=np.float32).reshape(-1, 3)
         texture_coordinates = np.array(texture_coordinates, dtype=np.float32).reshape(-1, 2)
         indices = np.array(indices, dtype=np.uint32)
-        print(f"Num. tris: {len(indices) // 3}")
+
+        log(f"Num. triangles: {len(indices) // 3:,d}")
+        log(f"Num. vertices: {len(vertices):,d}")
+        timer.update()
+        log(f"Mesh Generation Took {1000 * timer.delta:.2f} ms "
+              f"({1e9 * timer.delta / len(indices):.2f} ns per triangle)")
+
+        return Mesh(texture, vertices, texture_coordinates, indices)
+
+    @staticmethod
+    def from_copy_with_new_depth(mesh, depth_map):
+        height, width = depth_map.shape[:2]
+        num_subdivisions = np.sqrt(len(mesh.vertices))
+
+        col_i, row_i = np.meshgrid(np.arange(num_subdivisions), np.arange(num_subdivisions))
+        u = (col_i / num_subdivisions * width).astype(np.int)
+        v = ((1 - row_i / num_subdivisions) * height - 1).astype(np.int)
+        z_coords = 1. - depth_map[v, u, 0] / 255.0
+
+        texture = mesh.texture.copy()
+
+        vertices = mesh.vertices.copy()
+        vertices[:, 2] = z_coords.flatten()
+
+        texture_coordinates = mesh.texture_coordinates.copy()
+        indices = mesh.indices.copy()
 
         return Mesh(texture, vertices, texture_coordinates, indices)
 
@@ -538,21 +574,23 @@ class MeshRenderer:
     Program for rendering a single mesh.
     """
 
-    def __init__(self, mesh,
+    def __init__(self,
                  default_shader_program: ShaderProgram,
                  debug_shader_program: Optional[ShaderProgram] = None,
                  window_name='Hello world!',
                  can_reshape_window=False,
                  camera=Camera((512, 512)),
-                 fps=60):
+                 fps=60,
+                 unlimited_frame_works=False):
         """
-        :param mesh: The mesh to be rendered.
         :param default_shader_program: The main shader program to be used.
         :param debug_shader_program: (optional) The shader used for debugging.
         :param window_name: The name of the window to use for rendering.
         :param can_reshape_window: Whether the window should be allowed to resized.
         :param camera: The camera used for viewing the mesh.
         :param fps: The target frames per second to draw at.
+        :param unlimited_frame_works: Run the main loop as fast as possible, the time delta given to the update callback
+             will be fixed to `1.0 / fps`.
         """
         self.camera = camera
         self.width = camera.window_width
@@ -568,8 +606,7 @@ class MeshRenderer:
 
         glut.glutCreateWindow(window_name)
         glut.glutReshapeFunc(self.reshape)
-        # glut.glutIdleFunc(self.idle)
-        glut.glutDisplayFunc(self.display)
+        glut.glutDisplayFunc(self.draw)
         glut.glutKeyboardFunc(self.keyboard)
         glut.glutMouseFunc(self.mouse)
         glut.glutMouseWheelFunc(self.mouse_wheel)
@@ -587,7 +624,7 @@ class MeshRenderer:
         gl.glAlphaFunc(gl.GL_NOTEQUAL, 0.0)
 
         if pixel_buffer_object.glInitPixelBufferObjectARB():
-            print(f"Pixel buffer object supported.")
+            log(f"Pixel buffer object supported.")
         else:
             # TODO: If pixel buffer object is not supported, run with slower, synchronous glReadPixels
             raise RuntimeError(f"Pixel buffer object not supported.")
@@ -634,24 +671,35 @@ class MeshRenderer:
         self.shader = self.default_shader
         self.shader.bind()
 
-        self.mesh = mesh
-        self.mesh.to_gpu(self.shader.get_attribute_location(self.position_attribute),
-                         self.shader.get_attribute_location(self.texcoord_attribute))
-        self.mesh.texture.to_gpu()
+        self._mesh: Optional[Mesh] = None
 
-        self.last_update_time: datetime.datetime = datetime.datetime.now()
-        self.last_frame_time: datetime.datetime = datetime.datetime.now()
+        self.pbo_index = 0
+        self.current_pixel_buffer_address = None
+
         self.fps: float = fps
         self.target_frame_time_ms = int(1000.0 // fps)
-        self.start_time = datetime.datetime.now()
-        self.on_update: Optional[Callable[[float], None]] = None
-        self.on_exit: Optional[Callable[[], None]] = None
+        self.target_frame_time_secs = 1.0 / fps
+
+        self.unlimited_frame_works = unlimited_frame_works
+        self.frame_timer = FrameTimer()
+
         self.paused = False
         self.wireframe_mode = False
-        self.pbo_index = 0
-        self.frame_buffer = None
-
         self.is_running = True
+
+        self.on_update: Optional[Callable[[float], None]] = None
+        self.on_exit: Optional[Callable[[], None]] = None
+
+    @property
+    def mesh(self):
+        return self._mesh
+
+    @mesh.setter
+    def mesh(self, mesh: Mesh):
+        self._mesh = mesh
+        self._mesh.to_gpu(self.shader.get_attribute_location(self.position_attribute),
+                          self.shader.get_attribute_location(self.texcoord_attribute))
+        self._mesh.texture.to_gpu()
 
     @property
     def frame_buffer_shape(self):
@@ -666,35 +714,44 @@ class MeshRenderer:
 
         Blocks until execution is finished.
         """
-        glut.glutTimerFunc(1, self.idle, 0)
-        glut.glutMainLoop()
+        try:
+            glut.glutTimerFunc(0, self.update, 0)
+            glut.glutMainLoop()
+        except:
+            if self.on_exit:
+                self.on_exit()
 
-    def idle(self, _):
+    def get_frame(self):
+        """
+        Copy the frame pixel data from pixel buffer to the CPU.
+
+        :return: The currently buffered frame as a PIL.Image object.
+        """
+        return Image.frombytes(mode='RGBA', size=self.frame_buffer_shape, data=self.current_pixel_buffer_address)
+
+    def update(self, _):
         if not self.is_running:
             return
 
-        glut.glutPostRedisplay()
-        now = datetime.datetime.now()
-        delta = (now - self.last_update_time).total_seconds()
+        self.draw()
+        self.frame_timer.update()
 
-        if (now - self.last_frame_time).total_seconds() > 1.0:
-            print(f"Frame Time: {1000 * delta:,.2f}ms")
-            self.last_frame_time = now
+        if self.on_update is not None and not self.paused:
+            self.on_update(self.target_frame_time_secs if self.unlimited_frame_works else self.frame_timer.delta)
 
-        if self.on_update and not self.paused:
-            self.on_update(delta)
+        if self.unlimited_frame_works:
+            time_to_wait_ms = 0
+        else:
+            time_to_wait_ms = int(self.target_frame_time_ms + (self.target_frame_time_ms - 1000 * self.frame_timer.delta))
+            time_to_wait_ms = min(self.target_frame_time_ms, max(time_to_wait_ms, 0))
 
-        time_to_wait_ms = int(self.target_frame_time_ms + (self.target_frame_time_ms - 1000 * delta))
-        time_to_wait_ms = min(self.target_frame_time_ms, max(time_to_wait_ms, 0))
+        glut.glutTimerFunc(time_to_wait_ms, self.update, 0)
 
-        glut.glutTimerFunc(time_to_wait_ms, self.idle, 0)
-
-        self.last_update_time = datetime.datetime.now()
-
-    def read_frame(self):
+    def copy_frame_to_pixel_buffer(self):
         """
-        Read the frame buffer pixel data to a CPU buffer.
+        Copy the frame buffer pixel data to the pixel buffer and update the current buffer address.
         """
+
         # Alternate through multiple PBOs so that while we read from one buffer, data can be written into another buffer
         # at the same time.
         num_pbo_buffers = len(self.pbo_ids)
@@ -708,7 +765,7 @@ class MeshRenderer:
         src = gl.glMapBuffer(gl.GL_PIXEL_PACK_BUFFER, gl.GL_READ_ONLY)
 
         if src:
-            self.frame_buffer = (gl.GLfloat * self.data_size).from_address(src)
+            self.current_pixel_buffer_address = (gl.GLfloat * self.data_size).from_address(src)
 
             gl.glUnmapBuffer(gl.GL_PIXEL_PACK_BUFFER)
 
@@ -716,24 +773,24 @@ class MeshRenderer:
 
         gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT)
 
-    def display(self):
+    def draw(self):
         if not self.is_running:
             return
 
         gl.glReadBuffer(gl.GL_FRONT)
-        self.read_frame()
+        self.copy_frame_to_pixel_buffer()
         gl.glDrawBuffer(gl.GL_BACK)
 
-        self.shader.bind()
+        if self.mesh is not None:
+            self.shader.bind()
+            mvp = self.camera.view_projection_matrix @ self.mesh.transform
+            gl.glUniformMatrix4fv(self.shader.get_uniform_location(self.mvp_uniform), 1, gl.GL_TRUE, mvp)
 
-        mvp = self.camera.view_projection_matrix @ self.mesh.transform
-        gl.glUniformMatrix4fv(self.shader.get_uniform_location(self.mvp_uniform), 1, gl.GL_TRUE, mvp)
-
-        self.mesh.texture.bind()
-        self.mesh.bind()
-        self.mesh.draw()
-        self.mesh.unbind()
-        self.mesh.texture.unbind()
+            self.mesh.texture.bind()
+            self.mesh.bind()
+            self.mesh.draw()
+            self.mesh.unbind()
+            self.mesh.texture.unbind()
 
         self.shader.unbind()
 
@@ -750,24 +807,15 @@ class MeshRenderer:
 
         sys.exit(0)
 
-    def reshape(self, width, height):
+    def reshape(self, _, height):
         self.width = int(min(glut.glutGet(glut.GLUT_SCREEN_WIDTH), self.camera.aspect_ratio * height))
         self.height = int(self.width / self.camera.aspect_ratio)
 
         gl.glViewport(0, 0, self.width, self.height)
         glut.glutReshapeWindow(self.width, self.height)
-        # if self.can_reshape_window:
-        #     self.width = int(min(glut.glutGet(glut.GLUT_SCREEN_WIDTH), self.camera.aspect_ratio * height))
-        #     self.height = int(self.width / self.camera.aspect_ratio)
-        #
-        #     gl.glViewport(0, 0, self.width, self.height)
-        #     glut.glutReshapeWindow(self.width, self.height)
-        # else:
-        #     gl.glViewport(0, 0, self.initial_window_width, self.initial_window_height)
-        #     glut.glutReshapeWindow(self.initial_window_width, self.initial_window_height)
 
-    def mouse(self, button, dir, x, y):
-        self.camera.mouse(button, dir, x, y)
+    def mouse(self, button, direction, x, y):
+        self.camera.mouse(button, direction, x, y)
 
     def mouse_wheel(self, wheel, direction, x, y):
         self.camera.mouse_wheel(wheel, direction, x, y)

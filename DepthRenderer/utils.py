@@ -155,7 +155,8 @@ def load_colour(fp, should_mask=False, mask_white=True):
     H, W, C = colour_image.shape
 
     if C == 3:
-        colour_image = np.concatenate((colour_image, colour_image.max() * np.ones(shape=(H, W, 1), dtype=colour_image.dtype)), axis=2)
+        colour_image = np.concatenate(
+            (colour_image, colour_image.max() * np.ones(shape=(H, W, 1), dtype=colour_image.dtype)), axis=2)
 
     if should_mask:
         mask_colour = [255, 255, 255] if mask_white else [0, 0, 0]
@@ -226,12 +227,19 @@ class Task:
     >>> task()
     Hello, world!
     """
+
     def __init__(self, task):
         self.task = task
         self.call_count = 0
 
     def __call__(self, *args, **kwargs):
         return self.task(*args, **kwargs)
+
+    def reset(self):
+        """
+        Clear the state of the task.
+        """
+        self.call_count = 0
 
 
 class DelayedTask(Task):
@@ -289,6 +297,11 @@ class OneTimeTask(Task):
             self.is_done = True
             return super().__call__(*args, **kwargs)
 
+    def reset(self):
+        super().reset()
+
+        self.is_done = False
+
 
 class RecurringTask(Task):
     """
@@ -320,10 +333,13 @@ class RecurringTask(Task):
         self.frequency = frequency
 
     def __call__(self, *args, **kwargs):
+        result = None
+
         if self.call_count % self.frequency == 0:
-            return super().__call__(*args, **kwargs)
+            result = super().__call__(*args, **kwargs)
 
         self.call_count += 1
+        return result
 
 
 def read_frame_buffer(frame_buffer, size, mode='RGBA'):
@@ -336,7 +352,7 @@ def read_frame_buffer(frame_buffer, size, mode='RGBA'):
 
     :return: A PIL.Image object.
     """
-    return Image.frombuffer(mode, size, data=frame_buffer)
+    return Image.frombytes(mode, size, data=frame_buffer)
 
 
 def process_frame_numpy(frame_from_buffer):
@@ -366,22 +382,26 @@ class ImageWriter:
     Handles writing a given frame buffer to disk.
     """
 
-    def __init__(self, size):
+    def write(self, frame, path, file_format='PNG'):
         """
-        :param size: The width and height and the images to be written.
-        """
-        self.size = size
-        self.width, self.height = size
+        Write a frame to disk.
 
-    def write(self, frame_buffer, path, file_format='PNG'):
-        """
-        Write a frame buffer to file.
-
-        :param frame_buffer: The frame buffer copied from the GPU.
+        :param frame: The frame to write.
         :param path: The path to save the image.
         :param file_format: The format to save the image in.
         """
-        image = process_frame_pillow(read_frame_buffer(frame_buffer, self.size))
+        self._worker(frame, path, file_format)
+
+    @staticmethod
+    def _worker(frame, path, file_format):
+        """
+        Worker function used to write a frame to file.
+
+        :param frame: The frame buffer copied from the GPU.
+        :param path: The path to save the image.
+        :param file_format: The format to save the image in.
+        """
+        image = process_frame_pillow(frame)
 
         image.save(path, file_format)
 
@@ -391,38 +411,23 @@ class AsyncImageWriter(ImageWriter):
     Handles writing a given frame buffer to disk asynchronously on a separate thread.
     """
 
-    def __init__(self, size, num_workers=4):
+    def __init__(self, num_workers=4):
         """
-        :param size: The width and height and the images to be written.
         :param num_workers: The number of threads to use.
         """
-        super().__init__(size)
+        super().__init__()
 
         self.pool = ThreadPool(processes=num_workers)
 
-    def write(self, frame_buffer, path, file_format='PNG'):
+    def write(self, frame, path, file_format='PNG'):
         """
-        Write a frame buffer to file.
+        Write a frame to file.
 
-        :param frame_buffer: The frame buffer copied from the GPU.
+        :param frame: The frame to write.
         :param path: The path to save the image.
         :param file_format: The format to save the image in.
         """
-        self.pool.apply_async(self._worker, (frame_buffer, self.size, path, file_format))
-
-    @staticmethod
-    def _worker(frame_buffer, size, path, file_format):
-        """
-        Worker function used to write a frame buffer to file.
-
-        :param frame_buffer: The frame buffer copied from the GPU.
-        :param size: The width and height of the frame.
-        :param path: The path to save the image.
-        :param file_format: The format to save the image in.
-        """
-        image = process_frame_pillow(read_frame_buffer(frame_buffer, size))
-
-        image.save(path, file_format)
+        self.pool.apply_async(self._worker, (frame, path, file_format))
 
     def cleanup(self):
         """
@@ -434,7 +439,7 @@ class AsyncImageWriter(ImageWriter):
 
 class VideoWriter:
     """
-    Handles writing a series of frame buffers to a video file.
+    Handles writing a series of frames to a video file.
     """
 
     def __init__(self, path, size, fourcc=cv2.VideoWriter_fourcc(*'DIVX'), fps=24):
@@ -450,17 +455,26 @@ class VideoWriter:
         self.fps = fps
         self.writer = cv2.VideoWriter(self.path, self.fourcc, self.fps, self.size)
 
-    def write(self, frame_buffer):
+    def write(self, frame):
         """
         Add a frame to the video.
 
-        :param frame_buffer: The frame buffer to add to the video.
+        :param frame: The frame to add to the video.
         """
-        if frame_buffer is not None:
-            frame = process_frame_numpy(read_frame_buffer(frame_buffer, self.size))
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        self._worker(self.writer, frame)
 
-            self.writer.write(frame)
+    @staticmethod
+    def _worker(writer, frame):
+        """
+        Worker function used to write a frame to a video.
+
+        :param writer: The OpenCV VideoWriter object to use for writing the video.
+        :param frame: The frame to write.
+        """
+        frame = process_frame_numpy(frame)
+        frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        writer.write(frame)
 
     def cleanup(self):
         """
@@ -472,44 +486,29 @@ class VideoWriter:
 
 class AsyncVideoWriter(VideoWriter):
     """
-    Handles writing a series of frame buffers to a video file asynchronously on a separate thread.
+    Handles writing a series of frames to a video file asynchronously on a separate thread.
     """
 
-    def __init__(self, path, size, fourcc=cv2.VideoWriter.fourcc(*'DIVX'), fps=24, num_workers=4):
+    def __init__(self, path, size, fourcc=cv2.VideoWriter.fourcc(*'DIVX'), fps=24):
         """
         :param path: The path to save the video to.
         :param size: The width and height of frames to be written.
         :param fourcc: The four character code of the video format to use.
         :param fps: The frame rate to encode the video at.
-        :param num_workers: The number of threads to use.
         """
         super().__init__(path, size, fourcc, fps)
 
         # Have to use a thread pool instead of process pool since VideoWriter objects cannot be pickled.
-        self.pool = ThreadPool(processes=num_workers)
+        # Have to use thread pool size of one to avoid various errors.
+        self.pool = ThreadPool(processes=1)
 
-    def write(self, frame_buffer):
+    def write(self, frame):
         """
         Add a frame to the video.
 
-        :param frame_buffer: The frame buffer to add to the video.
+        :param frame: The frame to add to the video.
         """
-        self.pool.apply_async(self._worker, (self.writer, frame_buffer, self.size))
-
-    @staticmethod
-    def _worker(writer, frame_buffer, size):
-        """
-        Worker function used to write a frame buffer to a video.
-
-        :param writer: The OpenCV VideoWriter object to use for writing the video.
-        :param frame_buffer: The frame buffer copied from the GPU.
-        :param size: The width and height of the frame.
-        """
-        if frame_buffer is not None:
-            frame = process_frame_numpy(read_frame_buffer(frame_buffer,size))
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
-            writer.write(frame)
+        self.pool.apply_async(self._worker, (self.writer, frame))
 
     def cleanup(self):
         """
@@ -519,3 +518,14 @@ class AsyncVideoWriter(VideoWriter):
         self.pool.join()
 
         super().cleanup()
+
+
+class FrameTimer:
+    def __init__(self):
+        self.last_frame_time = datetime.datetime.utcnow()
+        self.delta = 0.0
+
+    def update(self):
+        now = datetime.datetime.utcnow()
+        self.delta = (now - self.last_frame_time).total_seconds()
+        self.last_frame_time = now

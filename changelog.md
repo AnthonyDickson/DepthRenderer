@@ -1,3 +1,14 @@
+# 2021-02-10
+- Add a script for automatically creating video datasets for a given image and series of depth maps.
+- Add back in displacement factor command line argument.
+- Add function for getting the frame pixel data by value rather than reference which fixes a bug with async image/video 
+  writers that are slower than the frame rate.
+- Add function for resetting animations, making reusing the same animations easier.
+- Add functions for copying textures and meshes.
+- Add mode for rendering as fast as possible, while simulating fixed time step updates.
+- The mesh in a renderer can be changed on the fly.
+- Add a frame timer util.
+
 # 2021-02-08
 - Add callback to handle the program exiting.
 - Load images as RGBA and add option to mask pixels.

@@ -11,6 +11,10 @@ class Animation:
     def update(self, delta):
         self.elapsed += delta
 
+    def reset(self):
+        self.transform = np.eye(4, dtype=np.float32)
+        self.elapsed = 0.0
+
     def apply(self, other):
         return other @ self._transform
 
@@ -24,17 +28,18 @@ class Animation:
 
 
 class RotateAxisBounce(Animation):
-    def __init__(self, angle=np.pi / 2, axis=Axis.Y, speed=1.0):
+    def __init__(self, angle=np.pi / 2, axis=Axis.Y, speed=1.0, offset=0):
         super().__init__()
 
         self.angle = angle
         self.axis = axis
         self.speed = speed
+        self.offset = offset
 
     def update(self, delta):
         super().update(delta)
 
-        new_angle = np.sin(self.speed * self.elapsed * 2.0 * np.pi) * self.angle
+        new_angle = np.sin(2.0 * np.pi * (self.speed * self.elapsed + self.offset)) * self.angle
         self.transform = get_rotation_matrix(new_angle, axis=self.axis)
 
 
@@ -49,8 +54,8 @@ class RotateXYBounce(Animation):
     def update(self, delta):
         super().update(delta)
 
-        y_axis_rotation = np.sin(self.speed * self.elapsed * 2 * np.pi + self.offset * 2.0 * np.pi) * self.angle
-        x_axis_rotation = np.cos(self.speed * self.elapsed * 2 * np.pi + self.offset * 2.0 * np.pi) * self.angle
+        y_axis_rotation = np.sin(2.0 * np.pi * (self.speed * self.elapsed + self.offset)) * self.angle
+        x_axis_rotation = np.cos(2.0 * np.pi * (self.speed * self.elapsed + self.offset)) * self.angle
 
         self.transform = get_rotation_matrix(y_axis_rotation, axis=Axis.Y) @ get_rotation_matrix(x_axis_rotation,
                                                                                                  axis=Axis.X)
@@ -95,6 +100,10 @@ class Compose(Animation):
 
         for animation in self.animations:
             animation.update(delta)
+
+    def reset(self):
+        for animation in self.animations:
+            animation.reset()
 
     @property
     def transform(self):
