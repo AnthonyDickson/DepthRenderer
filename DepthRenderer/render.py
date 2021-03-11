@@ -485,7 +485,12 @@ class Mesh(OpenGLInterface):
         v = ((1 - row_i / num_rows) * height - 1).astype(np.int)
         x_coords = x[col_i]
         y_coords = y[row_i]
-        z_coords = 1. - depth_map[v, u, 0] / 255.0
+
+        if len(depth_map.shape) == 3:
+            z_coords = 1. - depth_map[v, u, 0] / 255.0
+        else:
+            z_coords = 1. - depth_map[v, u] / 255.0
+
         u_coords = x_texture[col_i]
         v_coords = y_texture[row_i]
 
@@ -593,7 +598,7 @@ class MeshRenderer:
         gl.glEnable(gl.GL_CULL_FACE)
         gl.glCullFace(gl.GL_BACK)
         gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
+        gl.glClearColor(1.0, 1.0, 1.0, 1.0)
 
         if pixel_buffer_object.glInitPixelBufferObjectARB():
             log(f"Pixel buffer object supported.")

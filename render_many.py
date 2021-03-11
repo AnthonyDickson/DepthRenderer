@@ -314,7 +314,7 @@ def main(image_path, depth_maps_path, fps=60, mesh_density=8, displacement_facto
 
     write_image = RecurringTask(write_image_func, frequency=fps)
 
-    def write_frame_func():
+    def record_data_func():
         frame = renderer.get_frame()
 
         if frame is None:
@@ -332,7 +332,7 @@ def main(image_path, depth_maps_path, fps=60, mesh_density=8, displacement_facto
             if video_writer is not None:
                 video_writer.write(frame)
 
-    write_frame = DelayedTask(write_frame_func, delay=initial_delay)
+    record_data = DelayedTask(record_data_func, delay=initial_delay)
 
     def next_mesh_func():
         current_context = context_switcher.next_context()
@@ -340,7 +340,7 @@ def main(image_path, depth_maps_path, fps=60, mesh_density=8, displacement_facto
 
         renderer.mesh = context_switcher.current_context.mesh
         camera_animation.reset()
-        write_frame.reset()
+        record_data.reset()
         write_image.reset()
 
     next_mesh = RecurringTask(next_mesh_func, frequency=animation_length_in_frames + initial_delay + 1)
@@ -359,7 +359,7 @@ def main(image_path, depth_maps_path, fps=60, mesh_density=8, displacement_facto
 
         camera_animation.update(delta)
         camera.view = camera_position @ camera_animation.transform
-        write_frame()
+        record_data()
 
     def exit_callback():
         context_switcher.cleanup()
