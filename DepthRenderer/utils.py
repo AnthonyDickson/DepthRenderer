@@ -537,6 +537,7 @@ class FrameTimer:
         self.elapsed += self.delta
         self.last_frame_time = now
 
+
 def perlin(width, height, scale=5, seed=None):
     X = np.linspace(0, scale, width, endpoint=False)
     Y = np.linspace(0, scale, height, endpoint=False)

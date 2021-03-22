@@ -553,6 +553,7 @@ class MeshRenderer:
                  window_name='Hello world!',
                  camera=Camera((512, 512)),
                  fps=60,
+                 fixed_time_step=True,
                  unlimited_frame_works=False):
         """
         :param default_shader_program: The main shader program to be used.
@@ -560,8 +561,13 @@ class MeshRenderer:
         :param window_name: The name of the window to use for rendering.
         :param camera: The camera used for viewing the mesh.
         :param fps: The target frames per second to draw at.
-        :param unlimited_frame_works: Run the main loop as fast as possible, the time delta given to the update callback
-             will be fixed to `1.0 / fps`.
+        :param fixed_time_step: Whether the time step (delta) passed to the update callback should be a fixed time step
+            of `1.0 / fps` (True) or vary based on the actual time taken to render the last frame (False).
+            The expected result of setting this to `True` is that no matter how fast or slow the renderer is on screen,
+            the video output will always be the same. Conversely, setting this to `Fast' means that the rendered video
+            will reflect exactly what was shown on screen, and as such things like stuttering may lead to missing frames
+            in the rendered video.
+        :param unlimited_frame_works: Disable V-Sync and run the draw-update loop as fast as possible.
         """
         self.camera = camera
 
@@ -585,6 +591,10 @@ class MeshRenderer:
             log("GLFW window successfully created.")
 
         glfw.make_context_current(self.window)
+
+        if unlimited_frame_works:  ## Need to set swap interval to zero to uncap frame rate.
+            glfw.swap_interval(0)
+
         glfw.set_key_callback(self.window, self.keyboard)
         glfw.set_mouse_button_callback(self.window, self.mouse)
         glfw.set_scroll_callback(self.window, self.mouse_wheel)
@@ -654,10 +664,10 @@ class MeshRenderer:
         self.current_pixel_buffer_address = None
 
         self.fps: float = fps
-        self.target_frame_time_ms = int(1000.0 // fps)
         self.target_frame_time_secs = 1.0 / fps
 
-        self.unlimited_frame_works = unlimited_frame_works
+        self._unlimited_frame_works = unlimited_frame_works
+        self.fixed_time_step = fixed_time_step
         self.frame_timer = FrameTimer()
 
         self.is_paused = False
@@ -666,6 +676,19 @@ class MeshRenderer:
 
         self.on_update: Optional[Callable[[float], None]] = None
         self.on_exit: Optional[Callable[[], None]] = None
+
+    @property
+    def unlimited_frame_works(self):
+        return self._unlimited_frame_works
+
+    @unlimited_frame_works.setter
+    def unlimited_frame_works(self, value):
+        self._unlimited_frame_works = value
+
+        if self._unlimited_frame_works:
+            glfw.swap_interval(0)
+        else:
+            glfw.swap_interval(1)
 
     @property
     def mesh(self):
@@ -701,10 +724,10 @@ class MeshRenderer:
                     self.draw()
 
                     if self.on_update is not None and not self.is_paused:
-                        if self.unlimited_frame_works:
+                        if self.unlimited_frame_works or self.fixed_time_step:
                             delta = self.target_frame_time_secs
                         else:
-                            delta = self.frame_timer.delta
+                            delta = self.frame_timer.elapsed
 
                         self.on_update(delta)
 

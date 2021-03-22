@@ -9,7 +9,7 @@ from PIL import Image
 from .animation import RotateXYBounce, Compose, Translate, RotateAxisBounce
 from .render import Camera, ShaderProgram, MeshRenderer, Texture, Mesh
 from .utils import log, get_translation_matrix, get_scale_matrix, \
-    load_depth, DelayedTask, RecurringTask, AsyncImageWriter, AsyncVideoWriter, OneTimeTask, Axis, load_colour
+    load_depth, DelayedTask, RecurringTask, AsyncImageWriter, AsyncVideoWriter, OneTimeTask, Axis, load_colour, perlin
 
 
 def resize(image, size):
@@ -18,6 +18,21 @@ def resize(image, size):
     resized_image = resized_image.resize((width, height), Image.ANTIALIAS)
 
     return np.asarray(resized_image)
+
+
+def overlay_noise(image, **perlin_kwargs):
+    height, width = image.shape[:2]
+
+    noise = perlin(width, height, **perlin_kwargs)
+    noise = (noise - noise.min()) / (noise.max() - noise.min())
+    noise = 255 * noise
+    noise = np.expand_dims(noise, -1)
+
+    new_image = image.astype(np.float) + noise
+    new_image = new_image / new_image.max()
+    new_image = (255 * new_image).astype(np.uint8)
+
+    return new_image
 
 
 @plac.annotations(
@@ -69,6 +84,7 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
     colour = load_colour(image_path)
     depth = load_depth(depth_path)
     depth = resize(depth, colour.shape)
+    # depth = overlay_noise(overlay_noise(overlay_noise(depth, scale=32, seed=0), scale=16, seed=0), scale=8, seed=0)
 
     texture = Texture(colour)
     mesh = Mesh.from_depth_map(texture, density=mesh_density, depth_map=depth)
@@ -85,7 +101,9 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
 
     renderer = MeshRenderer(default_shader_program=default_shader,
                             debug_shader_program=debug_shader,
-                            fps=fps, camera=camera)
+                            fps=fps, camera=camera,
+                            unlimited_frame_works=True
+                            )
 
     renderer.mesh = mesh
     mesh.transform = get_scale_matrix(1.0) @ mesh.transform
@@ -98,7 +116,8 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
 
     os.makedirs(output_path, exist_ok=True)
 
-    animation_speed = 1
+    animation_length_secs = 5
+    animation_speed = 1.0 / animation_length_secs
 
     anim = Compose([
         RotateAxisBounce(np.deg2rad(2.5), axis=Axis.Y, offset=0.5, speed=-animation_speed),
@@ -119,18 +138,22 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
 
     write_frame = DelayedTask(RecurringTask(video_writer.write), delay=initial_delay)
 
+    close_window = DelayedTask(renderer.close, delay=3 * animation_length_secs * fps + initial_delay)
+
     def update_callback(delta):
         anim.update(delta)
 
         # TODO: Fix bug that ignores panning from mouse input. Need to store transforms to the view from mouse inputs
         #  separately instead of in Camera.view so that they are not overridden here.
-        # camera.view = camera_position @ anim.transform
+        camera.view = camera_position @ anim.transform
 
         frame = renderer.get_frame()
 
         if frame:
             render_one_frame(frame, os.path.join(output_path, 'sample_frame.png'))
             write_frame(frame)
+
+            close_window()
 
     def exit_callback():
         video_writer.cleanup()
@@ -144,7 +167,9 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
     renderer.on_update = update_callback
     renderer.on_exit = exit_callback
 
+    log("Starting main loop...")
     renderer.run()
+    log("Exited main loop.")
 
 
 if __name__ == '__main__':
