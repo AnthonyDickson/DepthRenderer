@@ -445,17 +445,17 @@ class Mesh(OpenGLInterface):
         gl.glDeleteVertexArrays(1, [self.vao_id])
 
     @staticmethod
-    def from_depth_map(texture, depth_map, density=0):
+    def from_texture(texture, depth_map: Optional[np.ndarray] = None, density=0):
         """
-        Create a mesh from a depth map.
+        Create a mesh from a texture and optionally a depth map.
 
         The initial mesh is a quad on the XY plane where each side is subdivided 2^density times.
         Each vertex has its z-coordinate set to a [0.0, 1.0] normalised depth value from the closest corresponding pixel
         in the depth map.
 
         :param texture: The colour texture for the mesh.
-        :param depth_map: The depth map to create the mesh from.
-        :param density: How fine the generated mesh should be. Increasing this value by one roughly quadruples the
+        :param depth_map: (optional) The depth map (8-bit values) to create the mesh from.
+        :param density: (optional) How fine the generated mesh should be. Increasing this value by one roughly quadruples the
             number of vertices.
         :return: The resulting mesh.
         """
@@ -486,10 +486,13 @@ class Mesh(OpenGLInterface):
         x_coords = x[col_i]
         y_coords = y[row_i]
 
-        if len(depth_map.shape) == 3:
-            z_coords = 1. - depth_map[v, u, 0] / 255.0
+        if depth_map is not None:
+            if len(depth_map.shape) == 3:
+                z_coords = 1. - depth_map[v, u, 0] / 255.0
+            else:
+                z_coords = 1. - depth_map[v, u] / 255.0
         else:
-            z_coords = 1. - depth_map[v, u] / 255.0
+            z_coords = np.ones_like(x_coords)
 
         u_coords = x_texture[col_i]
         v_coords = y_texture[row_i]
@@ -608,7 +611,7 @@ class MeshRenderer:
         gl.glEnable(gl.GL_CULL_FACE)
         gl.glCullFace(gl.GL_BACK)
         gl.glEnable(gl.GL_DEPTH_TEST)
-        gl.glClearColor(1.0, 1.0, 1.0, 1.0)
+        gl.glClearColor(0.0, 0.0, 0.0, 1.0)
 
         if pixel_buffer_object.glInitPixelBufferObjectARB():
             log(f"Pixel buffer object supported.")

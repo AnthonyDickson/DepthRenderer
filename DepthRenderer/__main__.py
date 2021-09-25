@@ -87,7 +87,7 @@ def main(image_path="samples/00000_colors.png", depth_path="samples/00000_depth.
     # depth = overlay_noise(overlay_noise(overlay_noise(depth, scale=32, seed=0), scale=16, seed=0), scale=8, seed=0)
 
     texture = Texture(colour)
-    mesh = Mesh.from_depth_map(texture, density=mesh_density, depth_map=depth)
+    mesh = Mesh.from_texture(texture, density=mesh_density, depth_map=depth)
     mesh.vertices[:, 2] *= displacement_factor
 
     camera_position = get_translation_matrix(dz=-10)

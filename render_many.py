@@ -241,7 +241,7 @@ def main(image_path, depth_maps_path, fps=60, mesh_density=8, displacement_facto
             depth = resize(depth, colour.shape)
 
             self.texture = Texture(colour)
-            self.mesh = Mesh.from_depth_map(self.texture, depth, density=mesh_density)
+            self.mesh = Mesh.from_texture(self.texture, depth, density=mesh_density)
             self.mesh.vertices[:, 2] *= displacement_factor
 
             self.video_writer = AsyncVideoWriter(
