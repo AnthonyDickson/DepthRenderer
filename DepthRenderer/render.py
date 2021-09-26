@@ -445,7 +445,7 @@ class Mesh(OpenGLInterface):
         gl.glDeleteVertexArrays(1, [self.vao_id])
 
     @staticmethod
-    def from_texture(texture, depth_map: Optional[np.ndarray] = None, density=0):
+    def from_texture(texture, depth_map: Optional[np.ndarray] = None, density=0, debug=False):
         """
         Create a mesh from a texture and optionally a depth map.
 
@@ -457,12 +457,14 @@ class Mesh(OpenGLInterface):
         :param depth_map: (optional) The depth map (8-bit values) to create the mesh from.
         :param density: (optional) How fine the generated mesh should be. Increasing this value by one roughly quadruples the
             number of vertices.
+        :param debug: (optional) Whether to print debug info.
         :return: The resulting mesh.
         """
         assert density % 1 == 0, f"Density must be a whole number, got {density}."
         assert density >= 0, f"Density must be a non-negative number, got {density}."
 
-        log("Generating mesh...")
+        if debug:
+            log("Generating mesh...")
 
         timer = FrameTimer()
 
@@ -516,11 +518,12 @@ class Mesh(OpenGLInterface):
         texture_coordinates = np.array(texture_coordinates, dtype=np.float32).reshape(-1, 2)
         indices = np.array(indices, dtype=np.uint32)
 
-        log(f"Num. triangles: {len(indices) // 3:,d}")
-        log(f"Num. vertices: {len(vertices):,d}")
-        timer.update()
-        log(f"Mesh Generation Took {1000 * timer.delta:.2f} ms "
-            f"({1e9 * timer.delta / len(indices):.2f} ns per triangle)")
+        if debug:
+            log(f"Num. triangles: {len(indices) // 3:,d}")
+            log(f"Num. vertices: {len(vertices):,d}")
+            timer.update()
+            log(f"Mesh Generation Took {1000 * timer.delta:.2f} ms "
+                f"({1e9 * timer.delta / len(indices):.2f} ns per triangle)")
 
         return Mesh(texture, vertices, texture_coordinates, indices)
 
