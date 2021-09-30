@@ -7,7 +7,8 @@ from OpenGL import GL as gl
 from OpenGL.GL.ARB import pixel_buffer_object
 from PIL import Image
 
-from .utils import get_perspective_matrix, get_translation_matrix, log, interweave_arrays, flatten_arrays, FrameTimer
+from .utils import get_perspective_matrix, get_translation_matrix, log, interweave_arrays, flatten_arrays, FrameTimer, \
+    get_rotation_matrix, Axis
 
 
 class Camera:
@@ -25,6 +26,8 @@ class Camera:
         :param zoom_speed: The speed to zoom in/out at (the degrees to change the vertical field of view at).
         """
         # TODO: Update window size on window resize.
+        self.mouse_rotation_speed = 0.001
+        self.near_zoom_rate = 1.05
         self.window_size = window_size
 
         self.fov_y = fov_y
@@ -39,6 +42,7 @@ class Camera:
         self.prev_mouse_x = None
         self.prev_mouse_y = None
         self.is_scroll_wheel_down = False
+        self.is_lmb_down = False
 
         self.is_debug_mode = is_debug_mode
 
@@ -92,7 +96,7 @@ class Camera:
         Zoom the camera in.
         """
         if self.fov_y < self.zoom_speed:
-            self.fov_y *= 1.1
+            self.fov_y *= self.near_zoom_rate
         else:
             self.fov_y += self.zoom_speed
 
@@ -126,6 +130,14 @@ class Camera:
                 self.prev_mouse_y = None
 
             self.is_scroll_wheel_down = is_scroll_wheel_down
+        elif button == glfw.MOUSE_BUTTON_LEFT:
+            is_lmb_down = action != glfw.RELEASE
+
+            if self.is_lmb_down and not is_lmb_down:
+                self.prev_mouse_x = None
+                self.prev_mouse_y = None
+
+            self.is_lmb_down = is_lmb_down
         elif self.is_debug_mode:
             print(f"mouse(window={window}, button={button}, action={action}, mods={mods})")
 
@@ -145,6 +157,11 @@ class Camera:
             if self.is_scroll_wheel_down:
                 t = get_translation_matrix(dx / self.window_width, dy / self.window_height)
                 self.view = self.view @ t
+            elif self.is_lmb_down:
+                vertical_rotation = get_rotation_matrix(self.mouse_rotation_speed * dx, axis=Axis.Y)
+                horizontal_rotation = get_rotation_matrix(-self.mouse_rotation_speed * dy, axis=Axis.X)
+                rotation = vertical_rotation @ horizontal_rotation
+                self.view = self.view @ rotation
 
         self.prev_mouse_x = x
         self.prev_mouse_y = y
