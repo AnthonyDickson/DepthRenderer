@@ -1,4 +1,4 @@
-#version 460
+#version 330
 
 uniform mat4      mvp;           // The model, view and projection matrices as one matrix.
 uniform sampler2D colourSampler; // Texture

@@ -1,4 +1,4 @@
-#version 460
+#version 330
 
 uniform sampler2D colourSampler; // Texture
 varying vec2      v_texcoord;    // Interpolated fragment texture coordinates (in)
