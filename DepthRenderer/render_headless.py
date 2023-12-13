@@ -6,7 +6,7 @@ import numpy as np
 from PIL import Image
 from pyrr import Matrix44
 
-from DepthRenderer.DepthRenderer.utils import FrameTimer, log, interweave_arrays, flatten_arrays, get_perspective_matrix
+from DepthRenderer.DepthRenderer.utils import FrameTimer, log, interweave_arrays, flatten_arrays
 
 import moderngl
 
@@ -16,18 +16,13 @@ class Camera:
     A camera used for viewing a 3D scene.
     """
 
-    def __init__(self, window_size, fov_y=60, near=0.01, far=1000.0, is_debug_mode=False, zoom_speed=10):
+    def __init__(self, window_size, fov_y=60, near=0.01, far=1000.0):
         """
         :param window_size: The size of the window the camera is for.
         :param fov_y: The vertical field of view in degrees.
         :param near: The distance of the near plane from the camera.
         :param far: The distance of the far plane from the camera.
-        :param is_debug_mode: Whether to print debug info.
-        :param zoom_speed: The speed to zoom in/out at (the degrees to change the vertical field of view at).
         """
-        # TODO: Update window size on window resize.
-        self.mouse_rotation_speed = 0.001
-        self.near_zoom_rate = 1.05
         self.window_size = window_size
 
         self.fov_y = fov_y
@@ -36,15 +31,7 @@ class Camera:
         self.far = far
 
         self.view = np.eye(4, dtype=np.float32)
-        self.projection = get_perspective_matrix(self.fov_y, self.aspect_ratio, near=near, far=far)
-
-        self.zoom_speed = zoom_speed
-        self.prev_mouse_x = None
-        self.prev_mouse_y = None
-        self.is_scroll_wheel_down = False
-        self.is_lmb_down = False
-
-        self.is_debug_mode = is_debug_mode
+        self.projection = Matrix44.perspective_projection(fovy=self.fov_y, aspect=self.aspect_ratio, near=near, far=far)
 
     @property
     def aspect_ratio(self):
@@ -80,52 +67,6 @@ class Camera:
         The view-projection matrix (part of the model-view-projection matrix) for the camera.
         """
         return self.projection @ self.view
-
-    def _set_zoom(self, fov_y):
-        """
-        Helper function for setting the zoom based on a vertical field of view.
-
-        :param fov_y: The vertical field of view in degrees.
-        """
-        fov_y = max(0.0, fov_y)
-
-        self.projection = np.array(
-            [[fov_y / self.aspect_ratio, 0, 0, 0],
-             [0, fov_y, 0, 0],
-             [0, 0, (self.far + self.near) / (self.near - self.far),
-              (2 * self.near * self.far) / (self.near - self.far)],
-             [0, 0, -1, 0]],
-            dtype=np.float32
-        )
-
-    def zoom_in(self):
-        """
-        Zoom the camera in.
-        """
-        if self.fov_y < self.zoom_speed:
-            self.fov_y *= self.near_zoom_rate
-        else:
-            self.fov_y += self.zoom_speed
-
-        self._set_zoom(self.fov_y)
-
-    def zoom_out(self):
-        """
-        Zoom the camera out.
-        """
-        if self.fov_y <= self.zoom_speed:
-            self.fov_y *= 0.9
-        else:
-            self.fov_y -= self.zoom_speed
-
-        self._set_zoom(self.fov_y)
-
-    def reset_zoom(self):
-        """
-        Reset the zoom to its original value.
-        """
-        self.fov_y = self.original_fov_y
-        self._set_zoom(self.fov_y)
 
 class Mesh:
     """
