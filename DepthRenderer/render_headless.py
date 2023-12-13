@@ -227,7 +227,6 @@ class Mesh:
             log(f"Mesh Generation Took {1000 * timer.delta:.2f} ms "
                 f"({1e9 * timer.delta / len(indices):.2f} ns per triangle)")
 
-        # TODO: Fix bug with texture coordinates.
         return Mesh(texture, vertices, texture_coordinates, indices)
 
     @staticmethod
@@ -285,7 +284,7 @@ class MeshRenderer:
         vao_content = [(self.vbo, '3f', 'position'), (self.uv_bo, '2f', 'texcoord')]
         self.vao = self.ctx.vertex_array(program=self.shader_program, content=vao_content, index_buffer=self.ibo)
         self.fbo = self.ctx.framebuffer(color_attachments=[self.ctx.texture(camera.shape, 4)])
-        self.texture = self.ctx.texture(size=mesh.texture.shape[:2], components=3, data=mesh.texture)
+        self.texture = self.ctx.texture(size=mesh.texture.size, components=3, data=mesh.texture.tobytes())
 
         self.ctx.enable_only(moderngl.CULL_FACE | moderngl.DEPTH_TEST)
 
@@ -327,10 +326,11 @@ if __name__ == '__main__':
     try:
         image = Image.open('data/nyu2_train/basement_0001a_out/1.jpg')
         depth = Image.open('data/nyu2_train/basement_0001a_out/1.png')
-        mesh = Mesh.from_texture(np.asarray(image), np.asarray(depth), density=1)
+        mesh = Mesh.from_texture(image, np.asarray(depth), density=1)
         camera = Camera(window_size=(512, 512))
 
-        renderer = MeshRenderer(mesh, vertex_shader_path='DepthRenderer/DepthRenderer/shaders/shader.vert',
+        renderer = MeshRenderer(mesh, camera=camera,
+                                vertex_shader_path='DepthRenderer/DepthRenderer/shaders/shader.vert',
                                 fragment_shader_path='DepthRenderer/DepthRenderer/shaders/shader.frag')
 
         # TODO: Test various transformations on the mesh.
