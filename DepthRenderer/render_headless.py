@@ -111,7 +111,7 @@ class Mesh:
         self.transform = np.eye(4, dtype=np.float32)
 
     @staticmethod
-    def from_texture(texture: Image.Image, depth_map: Optional[np.ndarray] = None, density=0, debug=False):
+    def from_texture(texture: Image.Image, depth_map: Optional[np.ndarray] = None, density=0, depth_scalar=1.0, debug=False):
         """
         Create a mesh from a texture and optionally a depth map.
 
@@ -123,6 +123,7 @@ class Mesh:
         :param depth_map: (optional) The depth map (8-bit values) to create the mesh from.
         :param density: (optional) How fine the generated mesh should be. Increasing this value by one roughly quadruples the
             number of vertices.
+        :param depth_scalar: (optional) Scales the depth maps values.
         :param debug: (optional) Whether to print debug info.
         :return: The resulting mesh.
         """
@@ -150,17 +151,22 @@ class Mesh:
 
         col_i, row_i = np.meshgrid(np.arange(num_rows), np.arange(num_cols))
         u = (col_i / num_cols * width).astype(np.int)
-        v = ((1 - row_i / num_rows) * height - 1).astype(np.int)
+        v = (row_i / num_rows * height).astype(np.int)
         x_coords = x[col_i]
         y_coords = y[row_i]
 
         if depth_map is not None:
+            if depth_map.min() < 0 or depth_map.max() > 1.0:
+                raise ValueError(f"Depth maps should be normalised into the range [0.0, 1.0].")
+
             if len(depth_map.shape) == 3:
-                z_coords = 1. - depth_map[v, u, 0] / 255.0
+                z_coords = depth_map[v, u, 0]
             else:
-                z_coords = 1. - depth_map[v, u] / 255.0
+                z_coords = depth_map[v, u]
         else:
             z_coords = np.zeros_like(x_coords)
+
+        z_coords *= depth_scalar
 
         u_coords = x_texture[col_i]
         v_coords = y_texture[row_i]
@@ -231,6 +237,7 @@ class MeshRenderer:
         self.fbo.use()
         self.fbo.clear()
 
+        # noinspection PyUnresolvedReferences
         self.ctx.enable_only(moderngl.CULL_FACE | moderngl.DEPTH_TEST)
 
         mvp = camera.view_projection_matrix @ mesh.transform
@@ -261,13 +268,12 @@ if __name__ == '__main__':
     virtual_display_process = Popen(cmd)
 
     try:
-        image = Image.open('data/nyu2_train/basement_0001a_out/1.jpg')
-        depth = Image.open('data/nyu2_train/basement_0001a_out/1.png')
+        image = Image.open('data/nyu2_test/00000_colors.png')
+        depth = Image.open('data/nyu2_test/00000_depth.png')
 
-        # TODO: Get depth working.
-        mesh = Mesh.from_texture(image, density=0)
-        # mesh = Mesh.from_texture(image, np.asarray(depth), density=7)
-        camera = Camera(window_size=(640, 480))
+        # mesh = Mesh.from_texture(image, density=0)
+        mesh = Mesh.from_texture(image, np.asarray(depth) / 10_000, density=10, depth_scalar=10.0)
+        camera = Camera(window_size=(640, 480), fov_y=30)
 
         # Load shaders
         with open('DepthRenderer/DepthRenderer/shaders/shader.vert', 'r') as f:
@@ -282,13 +288,19 @@ if __name__ == '__main__':
         rotation[:3, :3] = Rotation.from_euler('xyz', [0, 0, 0], degrees=True).as_matrix()
 
         translation = np.eye(4)
-        translation[:3, 3] = [0.0, 0.0, 0.0]
+
+        # TODO: Fix bug where translating along the x-axis appears to orbit the scene. Is the projection matrix correct?
+        translation[:3, 3] = [0.0, 0.0, 1.0]
 
         mesh.transform = rotation @ translation
 
         translation = np.eye(4)
-        translation[:3, 3] = [0.0, 0.0, -1.3]
-        camera.view = translation
+        translation[:3, 3] = [0.0, 0.0, 0.0]
+
+        rotation = np.eye(4)
+        rotation[:3, :3] = Rotation.from_euler('xyz', [0, 0, 0], degrees=True).as_matrix()
+
+        camera.view = rotation @ translation
 
         frame = renderer.draw()
         frame.save('frame.png')
