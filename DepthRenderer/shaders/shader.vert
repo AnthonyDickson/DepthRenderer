@@ -1,15 +1,14 @@
 #version 330
 
-uniform mat4      mvp;           // The model, view and projection matrices as one matrix.
-uniform sampler2D colourSampler; // Texture
+uniform mat4 mvp; // The model, view and projection matrices as one matrix.
 
-attribute vec3 position;   // Vertex position
-attribute vec2 texcoord;   // Vertex texture coordinates
+in vec3 in_vert;   // Vertex position
+in vec2 in_texcoord;   // Vertex texture coordinates
 
-varying   vec2 v_texcoord; // Interpolated fragment texture coordinates (out)
+out vec2 frag_texcoord; // Interpolated fragment texture coordinates (out)
 
 void main()
 {
-  gl_Position = mvp * vec4(position.x, position.y, position.z, 1.0);
-  v_texcoord = texcoord;
+  gl_Position = mvp * vec4(in_vert, 1.0);
+  frag_texcoord = in_texcoord;
 }

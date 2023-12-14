@@ -4,7 +4,7 @@ from typing import Optional
 
 import numpy as np
 from PIL import Image
-from pyrr import Matrix44
+from scipy.spatial.transform import Rotation
 
 from DepthRenderer.DepthRenderer.utils import FrameTimer, log, interweave_arrays, flatten_arrays
 
@@ -30,36 +30,59 @@ class Camera:
         self.near = near
         self.far = far
 
-        self.view = np.eye(4, dtype=np.float32)
-        self.projection = Matrix44.perspective_projection(fovy=self.fov_y, aspect=self.aspect_ratio, near=near, far=far)
+        self.view = np.eye(4)
+        self.projection = self.get_perspective_matrix(fov_y=fov_y, aspect_ratio=self.aspect_ratio, near=near, far=far)
+
+    @classmethod
+    def get_perspective_matrix(cls, fov_y, aspect_ratio, near=0.01, far=1000.0):
+        """
+        Get a 4x4 perspective matrix.
+
+        :param fov_y: The field of view angle (degrees) visible along the y-axis.
+        :param aspect_ratio: The ratio of the width/height of the viewport.
+        :param near: The z-coordinate for the near plane.
+        :param far: The z-coordinate for the far plane.
+        :return: The perspective matrix.
+        """
+        s = 1 / np.tan(np.deg2rad(fov_y / 2))
+
+        return np.array(
+            [
+                [s * (1 / aspect_ratio), 0, 0, 0],
+                [0, s, 0, 0],
+                [0, 0, -(near + far) / (near - far), -(2 * near * far) / (near - far)],
+                [0, 0, -1, 0]
+            ],
+            dtype=np.float32
+        )
 
     @property
     def aspect_ratio(self):
         """
         The ratio between the width and height of the window.
         """
-        return self.window_width / self.window_height
+        return self.width / self.height
 
     @property
-    def window_width(self):
+    def width(self):
         """
         The width of the window in pixels.
         """
         return self.window_size[0]
 
     @property
-    def window_height(self):
+    def height(self):
         """
         The height of the window in pixels.
         """
         return self.window_size[1]
 
     @property
-    def shape(self):
+    def size(self):
         """
-        The height and width of the window in pixels.
+        The width and height of the camera window in pixels.
         """
-        return self.window_height, self.window_width
+        return self.width, self.height
 
     @property
     def view_projection_matrix(self):
@@ -88,7 +111,7 @@ class Mesh:
         self.transform = np.eye(4, dtype=np.float32)
 
     @staticmethod
-    def from_texture(texture, depth_map: Optional[np.ndarray] = None, density=0, debug=False):
+    def from_texture(texture: Image.Image, depth_map: Optional[np.ndarray] = None, density=0, debug=False):
         """
         Create a mesh from a texture and optionally a depth map.
 
@@ -111,13 +134,13 @@ class Mesh:
 
         timer = FrameTimer()
 
-        height, width = depth_map.shape[:2]
+        width, height = texture.size
 
         x, y = np.linspace(-1, 1, 2 ** density + 1, dtype=np.float32), \
                np.linspace(1, -1, 2 ** density + 1, dtype=np.float32)
 
         # Make the grid the same aspect ratio as the input depth map.
-        y = (height / width) * y - 0.5 * (1.0 - height / width) * y
+        y = y / (width / height)
 
         x_texture, y_texture = np.linspace(0, 1, 2 ** density + 1, dtype=np.float32), \
                                np.linspace(0, 1, 2 ** density + 1, dtype=np.float32)
@@ -137,7 +160,7 @@ class Mesh:
             else:
                 z_coords = 1. - depth_map[v, u] / 255.0
         else:
-            z_coords = np.ones_like(x_coords)
+            z_coords = np.zeros_like(x_coords)
 
         u_coords = x_texture[col_i]
         v_coords = y_texture[row_i]
@@ -170,26 +193,6 @@ class Mesh:
 
         return Mesh(texture, vertices, texture_coordinates, indices)
 
-    @staticmethod
-    def from_copy_with_new_depth(mesh, depth_map):
-        height, width = depth_map.shape[:2]
-        num_subdivisions = np.sqrt(len(mesh.vertices))
-
-        col_i, row_i = np.meshgrid(np.arange(num_subdivisions), np.arange(num_subdivisions))
-        u = (col_i / num_subdivisions * width).astype(np.int)
-        v = ((1 - row_i / num_subdivisions) * height - 1).astype(np.int)
-        z_coords = 1. - depth_map[v, u, 0] / 255.0
-
-        texture = mesh.texture.copy()
-
-        vertices = mesh.vertices.copy()
-        vertices[:, 2] = z_coords.flatten()
-
-        texture_coordinates = mesh.texture_coordinates.copy()
-        indices = mesh.indices.copy()
-
-        return Mesh(texture, vertices, texture_coordinates, indices)
-
 class MeshRenderer:
     """
     Program for rendering a single mesh.
@@ -197,57 +200,50 @@ class MeshRenderer:
 
     def __init__(self,
                  mesh: Mesh,
-                 vertex_shader_path: str,
-                 fragment_shader_path: str,
+                 vertex_shader: str,
+                 fragment_shader: str,
                  camera=Camera((512, 512))):
         """
+        :param mesh: The mesh to render.
+        :param vertex_shader: The vertex shader source code as a string.
+        :param fragment_shader: The vertex shader source code as a string.
         :param camera: The camera used for viewing the mesh.
-        :param fps: The target frames per second to draw at.
         """
         self.camera = camera
         # Create headless OpenGL context
         self.ctx = moderngl.create_context(standalone=True)
 
-        # Load shaders
-        with open(vertex_shader_path, 'r') as f:
-            vertex_shader_source = f.read()
-
-        with open(fragment_shader_path, 'r') as f:
-            fragment_shader_source = f.read()
-
-        self.shader_program = self.ctx.program(vertex_shader=vertex_shader_source,
-                                               fragment_shader=fragment_shader_source)
-
+        self.shader_program = self.ctx.program(vertex_shader=vertex_shader,
+                                               fragment_shader=fragment_shader)
         self.mesh = mesh
         self.vbo = self.ctx.buffer(mesh.vertices.astype(np.float32))
         self.ibo = self.ctx.buffer(mesh.indices.astype(np.int32))
         self.uv_bo = self.ctx.buffer(mesh.texture_coordinates.astype(np.float32))
-        vao_content = [(self.vbo, '3f', 'position'), (self.uv_bo, '2f', 'texcoord')]
+        vao_content = [(self.vbo, '3f', 'in_vert'), (self.uv_bo, '2f', 'in_texcoord')]
         self.vao = self.ctx.vertex_array(program=self.shader_program, content=vao_content, index_buffer=self.ibo)
-        self.fbo = self.ctx.framebuffer(color_attachments=[self.ctx.texture(camera.shape, 4)])
+        self.fbo = self.ctx.framebuffer(color_attachments=[self.ctx.texture(size=camera.size, components=4)])
         self.texture = self.ctx.texture(size=mesh.texture.size, components=3, data=mesh.texture.tobytes())
-
-        self.ctx.enable_only(moderngl.CULL_FACE | moderngl.DEPTH_TEST)
 
         self.mvp = self.shader_program['mvp']
 
     def draw(self) -> Image.Image:
+        self.ctx.clear()
         self.fbo.use()
-        self.fbo.clear(0.0, 0.0, 0.0, 1.0)
+        self.fbo.clear()
 
-        # TODO: Get working with perspective transform.
-        mvp = self.camera.view @ self.mesh.transform
-        # mvp = self.camera.view_projection_matrix @ self.mesh.transform
-        self.mvp.write(Matrix44(mvp, dtype='f4'))
+        self.ctx.enable_only(moderngl.CULL_FACE | moderngl.DEPTH_TEST)
 
+        mvp = camera.view_projection_matrix @ mesh.transform
+        self.mvp.write(mvp.astype(np.float32))
         self.texture.use()
-        self.vao.render(mode=moderngl.TRIANGLES)
+        # noinspection PyTypeChecker
+        self.vao.render(moderngl.TRIANGLES)
 
         data = self.fbo.read(components=3)
-        image = Image.frombytes('RGB', self.fbo.size, data)
-        image = image.transpose(Image.FLIP_TOP_BOTTOM)
+        render = Image.frombytes('RGB', self.fbo.size, data)
+        render = render.transpose(Image.FLIP_TOP_BOTTOM)
 
-        return image
+        return render
 
     def cleanup(self):
         self.texture.release()
@@ -267,20 +263,35 @@ if __name__ == '__main__':
     try:
         image = Image.open('data/nyu2_train/basement_0001a_out/1.jpg')
         depth = Image.open('data/nyu2_train/basement_0001a_out/1.png')
-        mesh = Mesh.from_texture(image, np.asarray(depth), density=1)
-        camera = Camera(window_size=(512, 512))
 
-        renderer = MeshRenderer(mesh, camera=camera,
-                                vertex_shader_path='DepthRenderer/DepthRenderer/shaders/shader.vert',
-                                fragment_shader_path='DepthRenderer/DepthRenderer/shaders/shader.frag')
+        # TODO: Get depth working.
+        mesh = Mesh.from_texture(image, density=0)
+        # mesh = Mesh.from_texture(image, np.asarray(depth), density=7)
+        camera = Camera(window_size=(640, 480))
 
-        # TODO: Test various transformations on the mesh.
-        # initial_position = np.eye(4, dtype=np.float32)
-        # initial_position[2, 3] = 1.0
-        # mesh.transform = initial_position
+        # Load shaders
+        with open('DepthRenderer/DepthRenderer/shaders/shader.vert', 'r') as f:
+            vertex_shader = f.read()
+
+        with open('DepthRenderer/DepthRenderer/shaders/shader.frag', 'r') as f:
+            fragment_shader = f.read()
+
+        renderer = MeshRenderer(mesh, camera=camera, vertex_shader=vertex_shader, fragment_shader=fragment_shader)
+
+        rotation = np.eye(4)
+        rotation[:3, :3] = Rotation.from_euler('xyz', [0, 0, 0], degrees=True).as_matrix()
+
+        translation = np.eye(4)
+        translation[:3, 3] = [0.0, 0.0, 0.0]
+
+        mesh.transform = rotation @ translation
+
+        translation = np.eye(4)
+        translation[:3, 3] = [0.0, 0.0, -1.3]
+        camera.view = translation
 
         frame = renderer.draw()
-        frame.save('frame.jpg')
+        frame.save('frame.png')
 
         renderer.cleanup()
     finally:
